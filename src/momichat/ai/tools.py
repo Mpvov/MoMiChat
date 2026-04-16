@@ -24,6 +24,11 @@ class SearchMenuTool(BaseTool):
     args_schema: Type[BaseModel] = SearchMenuInput
 
     def _run(self, query: str) -> str:
+        if query.lower() in ["", "all", "menu", "tất cả"]:
+            if not MENU_DICT:
+                return "Menu hiện đang trống (chưa load)."
+            return "\n".join([f"ID: {k} | Tên: {v['name']} | Giá: {v['price_m']}đ (M)/{v['price_l']}đ (L)" for k, v in MENU_DICT.items()])
+            
         results = kb.search_menu(query)
         if not results:
             return "Không tìm thấy món nào phù hợp."
@@ -44,12 +49,28 @@ class AddToCartTool(BaseTool):
     args_schema: Type[BaseModel] = AddToCartInput
 
     def _run(self, platform: str, user_id: str, item_id: str, size: str, quantity: int) -> str:
-        # In a real app we'd inject CartService, here we mock response for brevity
-        # validation over MENU_DICT
+        return "Not implemented synchronously."
+
+    async def _arun(self, platform: str, user_id: str, item_id: str, size: str, quantity: int) -> str:
+        from ..services.cart_service import CartService
+        
         if item_id not in MENU_DICT:
             return f"Error: Item {item_id} not found."
             
-        return f"Added {quantity}x {MENU_DICT[item_id]['name']} to cart."
+        cart_service = CartService()
+        item = MENU_DICT[item_id]
+        unit_price = item["price_m"] if size.upper() == "M" else item["price_l"]
+        
+        await cart_service.add_item(
+             platform=platform,
+             user_id=user_id,
+             item_id=item_id,
+             item_name=item["name"],
+             size=size.upper(),
+             quantity=quantity,
+             unit_price=unit_price
+        )
+        return f"Added {quantity}x {item['name']} (Size {size.upper()}) to cart."
 
 
 class CheckoutInput(BaseModel):
@@ -63,5 +84,42 @@ class CheckoutTool(BaseTool):
     args_schema: Type[BaseModel] = CheckoutInput
 
     def _run(self, platform: str, user_id: str) -> str:
-        # Calls OrderService + PaymentService
-        return "SUCCESS. System generated payment link in background."
+        return "Not implemented synchronously."
+
+    async def _arun(self, platform: str, user_id: str) -> str:
+        from ..services.cart_service import CartService
+        from ..services.order_service import OrderService
+        from ..services.payment_service import PaymentService
+        from ..core.database import async_session_factory
+        
+        cart_service = CartService()
+        order_service = OrderService()
+        payment_service = PaymentService()
+        
+        cart_items = await cart_service.get_cart(platform, user_id)
+        if not cart_items:
+            return "Giỏ hàng của con đang trống, hãy gọi món trước nha!"
+            
+        async with async_session_factory() as db:
+            try:
+                user = await order_service.get_or_create_user(db, platform, user_id)
+                order = await order_service.create_order(db, user.id, cart_items)
+                
+                if payment_service.payos is None:
+                    return "Lỗi: Thanh toán chưa được thiết lập (thiếu PayOS Key)."
+                    
+                description = f"Thanh toan DON {order.id}"
+                payment_link = await payment_service.create_payment_link(order.id, order.total_price, description)
+                
+                order.payos_order_code = payment_link["orderCode"]
+                await db.commit()
+                
+                # Clear cart upon successful order creation
+                await cart_service.clear_cart(platform, user_id)
+                
+                return f"Thành công! Hãy gửi cho user link thanh toán này: {payment_link['checkoutUrl']}"
+            except Exception as e:
+                await db.rollback()
+                import traceback
+                traceback.print_exc()
+                return f"Lỗi tạo đơn hàng hoặc mã thanh toán: {str(e)}"

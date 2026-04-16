@@ -1,0 +1,12 @@
+.venv
+__pycache__
+.git
+.agents
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+chroma_data
+postgres_data
+redis_data

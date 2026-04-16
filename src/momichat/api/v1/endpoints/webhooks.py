@@ -3,6 +3,8 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pydantic import BaseModel
+
 from ....adapters.base import OutgoingMessage
 from ....adapters.telegram import TelegramAdapter
 from ....ai.agent import process_user_message
@@ -21,44 +23,46 @@ order_service = OrderService()
 payment_service = PaymentService()
 
 
-async def handle_chat_message(raw_payload: dict, db: AsyncSession):
-    """Background task to process a single message using our abstract adapter."""
-    incoming = telegram_adapter.parse_incoming(raw_payload)
-    if not incoming.text:
-        return
+class IncomingChatMessage(BaseModel):
+    platform: str
+    user_id: str
+    text: str
+    username: str | None = None
+    display_name: str | None = None
+
+@router.post("/chat/process_message")
+async def process_message_endpoint(
+    payload: IncomingChatMessage,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Internal API endpoint designed to receive messages from external bot polling scripts.
+    It synchronously waits for the LLM response and returns the string back.
+    """
+    if not payload.text:
+        return {"status": "skipped", "reason": "No text"}
 
     # 1. Ensure user exists
     user = await order_service.get_or_create_user(
-        db, incoming.platform, incoming.platform_user_id, incoming.username, incoming.display_name
+        db, payload.platform, payload.user_id, payload.username, payload.display_name
     )
 
-    # 2. Get short term memory (dummy empty list for MVP, usually from Redis)
+    # 2. Get short term memory
     chat_history = [] 
 
     # 3. Process AI
     try:
         reply_text = await process_user_message(
-            incoming.platform, incoming.platform_user_id, incoming.text, chat_history
+            payload.platform, payload.user_id, payload.text, chat_history
         )
     except Exception as e:
         logger.error(f"AI processing error: {e}")
         reply_text = "Xin lỗi con, hiện tại chú đang bận xíu, chờ xíu nha (Hệ thống lỗi)."
 
-    # 4. Reply
-    outgoing = OutgoingMessage(platform_user_id=incoming.platform_user_id, text=reply_text)
-    await telegram_adapter.send_message(outgoing)
-
-
-@router.post("/telegram")
-async def telegram_webhook(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
-):
-    """Entrypoint for Telegram webhook payload."""
-    payload = await request.json()
-    background_tasks.add_task(handle_chat_message, payload, db)
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "response_text": reply_text
+    }
 
 
 @router.post("/payos")

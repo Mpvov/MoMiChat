@@ -1,6 +1,34 @@
 name: momichat
 
 services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: momichat_api
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+      - chromadb
+    restart: unless-stopped
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: momichat_bot
+    env_file:
+      - .env
+    environment:
+      - FASTAPI_INTERNAL_URL=http://api:8080/api/v1/webhooks/chat/process_message
+    depends_on:
+      - api
+    restart: unless-stopped
+
   db:
     image: postgres:15-alpine
     container_name: momichat_db
