@@ -3,8 +3,8 @@ AI Agent manager implementing the Factory Pattern to swap LLM providers
 and orchestrate LangChain Agent Executors with memory.
 """
 
-from langchain.agents import AgentExecutor, create_structured_chat_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
@@ -35,33 +35,26 @@ class AgentFactory:
             return ChatOpenAI(
                 model="gpt-4o-mini", 
                 temperature=0.7,
-                openai_api_key=settings.OPENAI_API_KEY
+                api_key=settings.OPENAI_API_KEY
             )
 
     @staticmethod
     def create_agent_executor():
         llm = AgentFactory.create_llm()
         tools = [SearchMenuTool(), AddToCartTool(), CheckoutTool()]
-        
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", SYSTEM_PROMPT),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("human", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
-        
-        agent = create_structured_chat_agent(llm, tools, prompt)
-        return AgentExecutor(agent=agent, tools=tools, verbose=True)
+        return create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
 
 # Global singleton executor for MVP
 agent_executor = AgentFactory.create_agent_executor()
 
 async def process_user_message(platform: str, user_id: str, message: str, chat_history: list) -> str:
     """Executes the agent logic for an incoming message."""
-    # In a full prod version we'd use BaseChatMessageHistory with Redis
-    # but here we pass chat_history directly
-    response = await agent_executor.ainvoke({
-        "input": message,
-        "chat_history": chat_history
-    })
-    return response["output"]
+    messages = chat_history + [HumanMessage(content=message)]
+    
+    response = await agent_executor.ainvoke({"messages": messages}, config={"configurable": {"thread_id": user_id}})
+    
+    # LangGraph returns a dict with "messages" list.
+    # The last message is the AI's response.
+    final_message = response["messages"][-1]
+    return final_message.content
+

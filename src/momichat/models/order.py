@@ -53,9 +53,9 @@ class Order(Base):
     )
 
     # Relationships
-    user: Mapped["User"] = relationship(back_populates="orders")  # noqa: F821
+    user: Mapped["User"] = relationship("User", back_populates="orders")  # noqa: F821
     items: Mapped[list["OrderItem"]] = relationship(
-        back_populates="order", cascade="all, delete-orphan"
+        "OrderItem", back_populates="order", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
@@ -75,7 +75,7 @@ class OrderItem(Base):
     toppings: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON string of topping IDs
 
     # Relationships
-    order: Mapped["Order"] = relationship(back_populates="items")
+    order: Mapped["Order"] = relationship("Order", back_populates="items")
 
     def __repr__(self) -> str:
         return f"<OrderItem {self.item_name} x{self.quantity} ({self.size})>"

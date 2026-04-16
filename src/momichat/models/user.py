@@ -35,7 +35,7 @@ class User(Base):
     )
 
     # Relationships
-    orders: Mapped[list["Order"]] = relationship(back_populates="user")  # noqa: F821
+    orders: Mapped[list["Order"]] = relationship("Order", back_populates="user")  # noqa: F821
 
     def __repr__(self) -> str:
         return f"<User {self.platform}:{self.platform_user_id}>"

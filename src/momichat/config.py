@@ -1,3 +1,4 @@
+import os
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     DEFAULT_LLM_PROVIDER: str = "openai"
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
+    HF_TOKEN: str = ""
     
     PAYOS_CLIENT_ID: str = ""
     PAYOS_API_KEY: str = ""
@@ -28,3 +30,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 settings = Settings()
+
+if settings.HF_TOKEN:
+    os.environ["HF_TOKEN"] = settings.HF_TOKEN

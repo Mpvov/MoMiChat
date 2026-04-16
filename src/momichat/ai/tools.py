@@ -19,8 +19,8 @@ class SearchMenuInput(BaseModel):
 
 
 class SearchMenuTool(BaseTool):
-    name = "search_menu"
-    description = "Use this to search the menu when a user asks for a drink or recommends something."
+    name: str = "search_menu"
+    description: str = "Use this to search the menu when a user asks for a drink or recommends something."
     args_schema: Type[BaseModel] = SearchMenuInput
 
     def _run(self, query: str) -> str:
@@ -39,8 +39,8 @@ class AddToCartInput(BaseModel):
 
 
 class AddToCartTool(BaseTool):
-    name = "add_to_cart"
-    description = "Use this to add items to the user's cart AFTER they confirm what they want."
+    name: str = "add_to_cart"
+    description: str = "Use this to add items to the user's cart AFTER they confirm what they want."
     args_schema: Type[BaseModel] = AddToCartInput
 
     def _run(self, platform: str, user_id: str, item_id: str, size: str, quantity: int) -> str:
@@ -58,8 +58,8 @@ class CheckoutInput(BaseModel):
 
 
 class CheckoutTool(BaseTool):
-    name = "checkout"
-    description = "Use this when the user is ready to pay. It generates a PayOS link."
+    name: str = "checkout"
+    description: str = "Use this when the user is ready to pay. It generates a PayOS link."
     args_schema: Type[BaseModel] = CheckoutInput
 
     def _run(self, platform: str, user_id: str) -> str:

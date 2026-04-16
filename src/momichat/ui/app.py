@@ -1,14 +1,21 @@
 import asyncio
 import os
+import sys
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+# Add 'src' to Python path so 'momichat' is discoverable
+src_path = Path(__file__).resolve().parent.parent.parent
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
 from momichat.config import settings
 from momichat.core.database import async_session_factory
-from momichat.models.order import Order, OrderStatus
+from momichat.models import Order, OrderStatus, User
 
 st.set_page_config(page_title="MoMiChat - Quản lý Cửa Hàng", layout="wide")
 

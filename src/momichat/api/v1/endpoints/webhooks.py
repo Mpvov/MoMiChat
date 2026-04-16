@@ -71,8 +71,7 @@ async def payos_webhook(
     payload = await request.json()
     
     # 1. Verify signature
-    signature = request.headers.get("payos-signature", "")
-    if not payment_service.verify_webhook_signature(payload, signature):
+    if not payment_service.verify_webhook_signature(payload):
         return {"status": "error", "message": "Invalid signature"}
 
     # 2. Extract Data
