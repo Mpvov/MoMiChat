@@ -1,0 +1,41 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
+import asyncio
+
+from .config import settings
+from .api.v1.router import api_router
+from .core.database import init_db
+from .ai.knowledge import KnowledgeBase
+
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version=settings.VERSION,
+    openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
+    description="MoMiChat Backend for AI Milk Tea Bot"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("startup")
+async def on_startup():
+    # Setup Database
+    await init_db()
+    
+    # Load Knowledge Base
+    kb = KnowledgeBase()
+    # Path adjusts since main is in src/momichat/
+    csv_path = Path(__file__).parent.parent.parent / "Menu.csv"
+    kb.initialize_menu(csv_path)
+
+app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+@app.get("/health")
+async def health_check() -> dict[str, str]:
+    return {"status": "healthy"}
