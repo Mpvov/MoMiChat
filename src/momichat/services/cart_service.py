@@ -10,6 +10,7 @@ import logging
 import redis.asyncio as redis
 
 from ..config import settings
+from ..utils.formatting import format_bold, format_italic
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +81,27 @@ class CartService:
         key = _cart_key(platform, user_id)
         await self.redis.delete(key)
 
+    async def add_topping_to_item(
+        self,
+        platform: str,
+        user_id: str,
+        cart_index: int,
+        topping_name: str,
+        topping_price: float,
+    ) -> list[dict] | None:
+        """Attach a topping to an existing cart item by index (0-based).
+        Returns updated cart, or None if index is invalid."""
+        cart = await self.get_cart(platform, user_id)
+        if not (0 <= cart_index < len(cart)):
+            return None
+        cart[cart_index]["toppings"].append(topping_name)
+        cart[cart_index]["unit_price"] += topping_price
+        key = _cart_key(platform, user_id)
+        await self.redis.set(key, json.dumps(cart, ensure_ascii=False), ex=CART_TTL)
+        return cart
+
     async def cart_summary(self, platform: str, user_id: str) -> str:
-        """Generate a human-readable cart summary string."""
+        """Generate a human-readable cart summary string with Markdown formatting."""
         cart = await self.get_cart(platform, user_id)
         if not cart:
             return "Giỏ hàng trống 🛒"
@@ -90,10 +110,12 @@ class CartService:
         for i, item in enumerate(cart, 1):
             subtotal = item["unit_price"] * item["quantity"]
             total += subtotal
+            
             topping_str = f" + {', '.join(item['toppings'])}" if item["toppings"] else ""
+            
             lines.append(
-                f"{i}. {item['item_name']} (Size {item['size']}){topping_str}"
-                f" x{item['quantity']} = {subtotal:,.0f}đ"
+                f"{i}. {format_bold(item['item_name'])} (Size {item['size']}){topping_str}\n"
+                f"   {format_italic(f'{item['quantity']} x {item['unit_price']:,.0f}đ = {subtotal:,.0f}đ')}"
             )
-        lines.append(f"\n💰 *Tổng: {total:,.0f}đ*")
+        lines.append(f"\n💰 {format_bold(f'TỔNG CỘNG: {total:,.0f}đ')}")
         return "\n".join(lines)

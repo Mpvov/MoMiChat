@@ -106,7 +106,11 @@ class OrderService:
         self, db: AsyncSession, payos_order_code: int
     ) -> Order | None:
         """Mark an order as paid using the payOS order code."""
-        stmt = select(Order).where(Order.payos_order_code == payos_order_code)
+        stmt = (
+            select(Order)
+            .where(Order.payos_order_code == payos_order_code)
+            .options(selectinload(Order.user))
+        )
         result = await db.execute(stmt)
         order = result.scalar_one_or_none()
         if order and order.status == OrderStatus.PENDING:

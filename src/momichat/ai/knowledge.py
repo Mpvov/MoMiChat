@@ -20,14 +20,21 @@ MENU_DICT: dict[str, dict] = {}
 class KnowledgeBase:
     def __init__(self) -> None:
         self.chroma_client = chromadb.HttpClient(host="localhost", port=8000)
-        # Using a small fast local embedding model for the MVP
-        self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
+        # We will lazily load the model on first use to speed up app startups
+        self._encoder: SentenceTransformer | None = None
         
         try:
             self.collection = self.chroma_client.get_or_create_collection(name="menu")
         except Exception as e:
             logger.error(f"Failed to connect to ChromaDB: {e}")
             self.collection = None
+
+    @property
+    def encoder(self) -> SentenceTransformer:
+        if self._encoder is None:
+            logger.info("Lazily initializing SentenceTransformer...")
+            self._encoder = SentenceTransformer("all-MiniLM-L6-v2")
+        return self._encoder
 
     def initialize_menu(self, csv_path: Path) -> None:
         """Parses Menu.csv, builds MENU_DICT, and vectors strings into ChromaDB."""
@@ -47,6 +54,7 @@ class KnowledgeBase:
                 MENU_DICT[item_id] = {
                     "name": row["name"],
                     "description": row["description"],
+                    "category": row.get("category", "Khác"),
                     "price_m": float(row["price_m"]) if row["price_m"] else None,
                     "price_l": float(row["price_l"]) if row["price_l"] else None,
                     "available": str(row["available"]).lower() == "true",

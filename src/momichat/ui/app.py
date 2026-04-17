@@ -43,7 +43,7 @@ async def update_order_status(order_id: int, new_status: OrderStatus):
 
 
 def main():
-    st.title("\U0001F9CB Quản lý Cửa Hàng Mẹ Bạn")
+    st.title("\U0001F9CB Trang quản lý đơn hàng")
     st.markdown("---")
 
     # Fetch data

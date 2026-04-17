@@ -12,6 +12,8 @@ from ....core.database import get_db
 from ....services.cart_service import CartService
 from ....services.order_service import OrderService
 from ....services.payment_service import PaymentService
+from ....services.memory_service import MemoryService
+from ....services.command_service import CommandService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -21,6 +23,8 @@ telegram_adapter = TelegramAdapter()
 cart_service = CartService()
 order_service = OrderService()
 payment_service = PaymentService()
+memory_service = MemoryService()
+command_service = CommandService(cart_service)
 
 
 class IncomingChatMessage(BaseModel):
@@ -47,21 +51,40 @@ async def process_message_endpoint(
         db, payload.platform, payload.user_id, payload.username, payload.display_name
     )
 
+    # Intercept Commands (Slash commands or Owner Buttons) before hitting AI Agent
+    cmd_result = await command_service.execute(payload.text, payload.platform, payload.user_id)
+    if cmd_result is not None:
+        reply_text, buttons = cmd_result
+        
+        # Fresh start logic
+        if payload.text.startswith("/start"):
+            await memory_service.clear_history(payload.platform, payload.user_id)
+            await cart_service.clear_cart(payload.platform, payload.user_id)
+            
+        return {
+            "status": "ok",
+            "response_text": reply_text,
+            "buttons": buttons
+        }
+
     # 2. Get short term memory
-    chat_history = [] 
+    chat_history = await memory_service.get_history(payload.platform, payload.user_id)
 
     # 3. Process AI
     try:
-        reply_text = await process_user_message(
+        reply_text, full_history, buttons = await process_user_message(
             payload.platform, payload.user_id, payload.text, chat_history
         )
+        await memory_service.save_history(payload.platform, payload.user_id, full_history)
     except Exception as e:
         logger.error(f"AI processing error: {e}")
-        reply_text = "Xin lỗi con, hiện tại chú đang bận xíu, chờ xíu nha (Hệ thống lỗi)."
+        reply_text = "Xin lỗi con, hiện tại cô đang bận xíu, chờ xíu nha."
+        buttons = []
 
     return {
         "status": "ok",
-        "response_text": reply_text
+        "response_text": reply_text,
+        "buttons": buttons
     }
 
 
@@ -97,5 +120,8 @@ async def payos_webhook(
                 text="Mẹ đã nhận được tiền của con rồi nha! Đang làm nước cho con nè \U0001F970"
             )
             background_tasks.add_task(telegram_adapter.send_message, msg)
+            
+            # 6. Persist everything
+            await db.commit()
 
     return {"status": "ok"}

@@ -4,13 +4,12 @@ and orchestrate LangChain Agent Executors with memory.
 """
 
 from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from ..config import settings
-from .tools import AddToCartTool, CheckoutTool, SearchMenuTool
+from .tools import AddToCartTool, AddToppingToCartTool, CheckoutTool, SearchMenuTool, ViewCartTool
 
 SYSTEM_PROMPT = """
 You are the AI clone of an extremely friendly and caring mother who owns "Tiệm trà bé lá" Milk Tea Shop. 
@@ -21,6 +20,18 @@ If the requested item is strange or doesn't exist, politely suggest something el
 CRITICAL RULES:
 1. When asked for the menu, ALWAYS use the `search_menu` tool with query "all" to get the items, and directly WRITE OUT the actual drink names and prices in your chat message. Do not say "Here is the menu" without actually listing the items you received from the tool.
 2. Available tools: search_menu, add_to_cart, checkout. Use them appropriately.
+3. HẠN CHẾ NÚT BẤM (BUTTONS): TUYỆT ĐỐI KHÔNG tự tạo nút cho các hành động chung (như "Xem menu", "Thanh toán"). Hãy để khách hàng nhắn tin tự nhiên. CHỈ dùng nút JSON cho các lựa chọn bắt buộc (VD: chọn Size M/L, Đá/Đường).
+   Cấu trúc JSON chuẩn:
+   ```json
+   {
+     "text": "Lời nhắn (dùng *Markdown*)",
+     "buttons": [{"text": "Size M", "callback_data": "size:M"}]
+   }
+   ```
+4. ĐỊNH DẠNG VĂN BẢN: Chỉ dùng `*in đậm*` (1 dấu sao) và `_in nghiêng_` (1 gạch dưới). TUYỆT ĐỐI KHÔNG dùng `**` hoặc HTML tags.
+5. THOÁT KÝ TỰ (ESCAPE): Phải dùng `\\*` và `\\_` để thoát các ký tự này nếu không dùng để định dạng văn bản.
+6. TOPPING RULE: Topping không bán riêng. Thêm vào ly mới dùng `add_to_cart`. Thêm vào ly có sẵn dùng `add_topping_to_cart_item`.
+7. CART RULE: Luôn gọi `view_cart` khi khách hỏi về giỏ hàng. Không tự đoán.
 """
 
 class AgentFactory:
@@ -43,39 +54,115 @@ class AgentFactory:
     @staticmethod
     def create_agent_executor():
         llm = AgentFactory.create_llm()
-        tools = [SearchMenuTool(), AddToCartTool(), CheckoutTool()]
-        memory = MemorySaver()
-        return create_react_agent(llm, tools, checkpointer=memory, prompt=SYSTEM_PROMPT)
+        tools = [SearchMenuTool(), ViewCartTool(), AddToCartTool(), AddToppingToCartTool(), CheckoutTool()]
+        return create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
 
 # Global singleton executor for MVP
 agent_executor = AgentFactory.create_agent_executor()
 
-async def process_user_message(platform: str, user_id: str, message: str, chat_history: list) -> str:
-    """Executes the agent logic for an incoming message."""
-    messages = chat_history + [HumanMessage(content=message)]
+async def process_user_message(platform: str, user_id: str, message: str, chat_history: list) -> tuple[str, list, list]:
+    """Executes the agent logic for an incoming message, returning text, history, and buttons."""
+    
+    # We silently inject the exact user parameters and tool constraints into the message 
+    # so the AI knows exactly how to invoke the tools without hallucinating.
+    enriched_message = (
+        f"[SYSTEM CONTEXT: platform='{platform}', user_id='{user_id}'. "
+        f"CRITICAL: If the user is ordering drinks, you MUST call the `add_to_cart` tool for EACH drink! "
+        f"Do NOT just say 'I added it', actually call the tool. If you do not know the exact `item_id`, use `search_menu` first! "
+        f"Toppings (TOPxx) are NOT drinks. For NEW orders with toppings, pass topping_ids in `add_to_cart`. "
+        f"To add a topping to a drink ALREADY IN CART, use `add_topping_to_cart_item` with the cart_index.]\n\n"
+        f"Customer Message: {message}"
+    )
+    
+    messages = chat_history + [HumanMessage(content=enriched_message)]
     
     response = await agent_executor.ainvoke({"messages": messages}, config={"configurable": {"thread_id": user_id}})
     
     # LangGraph returns a dict with "messages" list.
     # The last message is the AI's response.
-    final_message = response["messages"][-1]
+    full_messages = response["messages"]
+    final_message = full_messages[-1]
     
     content = final_message.content
     
-    if isinstance(content, str) and content.strip().startswith("[{"):
-        import json
+    import json
+    import re
+    
+    clean_text = str(content).strip()
+    buttons = []
+    
+    # Strip markdown code block wrapper if exists
+    if clean_text.startswith("```"):
+        lines = clean_text.split('\n')
+        if len(lines) >= 2:
+            clean_text = '\n'.join(lines[1:-1]).strip()
+
+    def _repair_json_buttons(text: str) -> str:
+        """Fixes common AI JSON errors, e.g., missing brackets around buttons."""
+        # Find "buttons": {obj1}, {obj2} and wrap in []
+        pattern = r'("buttons"\s*:\s*)([^{]*{[^}]*}(?:\s*,\s*{[^}]*})*)'
+        def wrap_in_brackets(match):
+            prefix = match.group(1)
+            content = match.group(2).strip()
+            if not content.startswith('['):
+                return f'{prefix}[{content}]'
+            return match.group(0)
+        return re.sub(pattern, wrap_in_brackets, text)
+
+    # --- JSON extraction (handles both pure JSON and embedded JSON) ---
+    def _try_parse_json_response(text: str) -> tuple[str, list] | None:
+        """Attempt to extract {"text": ..., "buttons": [...]} from the AI output."""
+        text = _repair_json_buttons(text)
+        
+        # Strategy 1: The whole string is valid JSON
         try:
-            parsed = json.loads(content)
-            if isinstance(parsed, list):
-                text_blocks = [b.get("text", "") for b in parsed if isinstance(b, dict) and "text" in b]
-                if text_blocks:
-                    return "\n".join(text_blocks)
-        except Exception:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and "text" in parsed:
+                btn = parsed.get("buttons", [])
+                if isinstance(btn, dict):
+                    btn = [btn]
+                return parsed["text"], btn
+        except (json.JSONDecodeError, ValueError):
             pass
 
+        # Strategy 2: JSON is embedded within prose text — find the outermost {...}
+        # This handles cases where the AI writes text before/after the JSON block
+        brace_start = text.find('{')
+        if brace_start != -1:
+            # Find the matching closing brace
+            depth = 0
+            for i in range(brace_start, len(text)):
+                if text[i] == '{':
+                    depth += 1
+                elif text[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_candidate = text[brace_start:i + 1]
+                        try:
+                            parsed = json.loads(json_candidate)
+                            if isinstance(parsed, dict) and "text" in parsed:
+                                btn = parsed.get("buttons", [])
+                                if isinstance(btn, dict):
+                                    btn = [btn]
+                                # Prepend any prose text before the JSON
+                                prefix = text[:brace_start].strip()
+                                final_text = parsed["text"]
+                                if prefix:
+                                    final_text = prefix + "\n\n" + final_text
+                                return final_text, btn
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        break
+        return None
+
+    result = _try_parse_json_response(clean_text)
+    if result:
+        return result[0], full_messages, result[1]
+
+    # Fallback for standard LangGraph response lists
     if isinstance(content, list):
         text_blocks = [block["text"] for block in content if isinstance(block, dict) and "text" in block]
-        return "\n".join(text_blocks)
+        if text_blocks:
+            return "\n".join(text_blocks), full_messages, []
         
-    return str(content)
-
+    return clean_text, full_messages, []
