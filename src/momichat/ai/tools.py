@@ -113,6 +113,10 @@ class AddToCartTool(BaseTool):
         return "Not implemented synchronously."
 
     async def _arun(self, platform: str, user_id: str, item_id: str, size: str, quantity: int, topping_ids: list[str] | None = None) -> str:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[AddToCart] called: item_id={item_id}, size={size}, qty={quantity}, toppings={topping_ids}, user={platform}:{user_id}")
+        
         from ..services.cart_service import CartService
         
         item_id = item_id.upper()
@@ -240,7 +244,16 @@ class CheckoutTool(BaseTool):
         async with async_session_factory() as db:
             try:
                 user = await order_service.get_or_create_user(db, platform, user_id)
+                
+                # Ensure we have phone and address
+                if not user.phone or not user.address:
+                    return "Lỗi: Khách hàng chưa cung cấp đủ Số điện thoại và Địa chỉ. Hãy gọi `update_delivery_info` trước khi thanh toán."
+                
                 order = await order_service.create_order(db, user.id, cart_items)
+                
+                # Copy delivery info from User to Order
+                order.delivery_phone = user.phone
+                order.delivery_address = user.address
                 
                 if payment_service.payos is None:
                     return "Lỗi: Thanh toán chưa được thiết lập (thiếu PayOS Key)."
@@ -257,3 +270,77 @@ class CheckoutTool(BaseTool):
                 import traceback
                 traceback.print_exc()
                 return f"Lỗi tạo đơn hàng hoặc mã thanh toán: {str(e)}"
+
+class UpdateDeliveryInfoInput(BaseModel):
+    platform: str = Field(description="Messaging platform")
+    user_id: str = Field(description="Platform user ID")
+    phone: str = Field(description="Customer's phone number")
+    address: str = Field(description="Customer's delivery address")
+
+class UpdateDeliveryInfoTool(BaseTool):
+    name: str = "update_delivery_info"
+    description: str = "Use this to save or update the customer's phone number and delivery address before checkout."
+    args_schema: Type[BaseModel] = UpdateDeliveryInfoInput
+
+    def _run(self, platform: str, user_id: str, phone: str, address: str) -> str:
+        return "Not implemented synchronously."
+
+    async def _arun(self, platform: str, user_id: str, phone: str, address: str) -> str:
+        from ..services.order_service import OrderService
+        from ..core.database import async_session_factory
+
+        order_service = OrderService()
+        async with async_session_factory() as db:
+            user = await order_service.get_or_create_user(db, platform, user_id)
+            user.phone = phone
+            user.address = address
+            await db.commit()
+            return f"Đã lưu thành công SDT: {phone} và Địa chỉ: {address} cho khách."
+
+class MarkOrderDoneInput(BaseModel):
+    platform: str = Field(description="Messaging platform")
+    user_id: str = Field(description="Platform user ID")
+
+class MarkOrderDoneTool(BaseTool):
+    name: str = "mark_order_done"
+    description: str = "Use this when the customer explicitly says they received the drink or arrived at the shop to pick it up. It marks their active shipping order as DONE."
+    args_schema: Type[BaseModel] = MarkOrderDoneInput
+
+    def _run(self, platform: str, user_id: str) -> str:
+        return "Not implemented synchronously."
+
+    async def _arun(self, platform: str, user_id: str) -> str:
+        from ..services.order_service import OrderService
+        from ..services.command_service import CommandService
+        from ..services.cart_service import CartService
+        from ..core.database import async_session_factory
+        from sqlalchemy import select, desc
+        from ..models.order import Order, OrderStatus
+
+        async with async_session_factory() as db:
+            order_service = OrderService()
+            user = await order_service.get_or_create_user(db, platform, user_id)
+            
+            # Find the latest SHIPPING order for this user
+            stmt = select(Order).where(Order.user_id == user.id, Order.status == OrderStatus.SHIPPING).order_by(desc(Order.created_at)).limit(1)
+            result = await db.execute(stmt)
+            order = result.scalar_one_or_none()
+            
+            if not order:
+                return "Lỗi: Khách hàng không có đơn hàng nào đang trong trạng thái 'Đang giao' (SHIPPING) để hoàn tất."
+            
+            # Mark as done using command service logic
+            # To avoid circular imports and keep logic DRY, we'll manually update here and trigger notification
+            from ..adapters.telegram import TelegramAdapter
+            from ..models.message import OutgoingMessage
+            from ..config import settings
+            import logging
+            
+            order.status = OrderStatus.DONE
+            await db.commit()
+            
+            # Notify Owner
+            tel = TelegramAdapter(settings.TELEGRAM_BOT_TOKEN)
+            await tel.send_to_owner(f"✅ Đơn hàng số {order.id} của khách {user.display_name} đã báo ĐÃ NHẬN HÀNG (qua chat)!")
+            
+            return f"Thành công! Đã chuyển trạng thái đơn {order.id} sang HOÀN TẤT (DONE)."

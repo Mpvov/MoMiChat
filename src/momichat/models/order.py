@@ -23,11 +23,12 @@ from ..core.database import Base
 
 
 class OrderStatus(str, enum.Enum):
-    PENDING = "pending"        # Cart submitted, awaiting payment
-    PAID = "paid"              # Payment confirmed via payOS webhook
-    PREPARING = "preparing"    # Mom started making the order
-    DONE = "done"              # Order completed and delivered
-    CANCELED = "canceled"      # Unpaid timeout or user-canceled
+    PENDING = "PENDING"        # Cart submitted, awaiting payment
+    PAID = "PAID"              # Payment confirmed via payOS webhook
+    PREPARING = "PREPARING"    # Mom started making the order
+    SHIPPING = "SHIPPING"      # Order is on the way (or ready for pickup)
+    DONE = "DONE"              # Order completed and delivered
+    CANCELED = "CANCELED"      # Unpaid timeout or user-canceled
 
 
 class Order(Base):
@@ -36,10 +37,13 @@ class Order(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
     status: Mapped[OrderStatus] = mapped_column(
-        Enum(OrderStatus), default=OrderStatus.PENDING, nullable=False
+        Enum(OrderStatus, create_type=False),
+        default=OrderStatus.PENDING, nullable=False
     )
     total_price: Mapped[float] = mapped_column(Numeric(10, 2), default=0)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivery_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    delivery_address: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # payOS fields
     payos_order_code: Mapped[int | None] = mapped_column(BigInteger, nullable=True, unique=True)

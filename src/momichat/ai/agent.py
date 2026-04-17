@@ -9,7 +9,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from ..config import settings
-from .tools import AddToCartTool, AddToppingToCartTool, CheckoutTool, SearchMenuTool, ViewCartTool
+from .tools import AddToCartTool, AddToppingToCartTool, CheckoutTool, SearchMenuTool, ViewCartTool, UpdateDeliveryInfoTool, MarkOrderDoneTool
 
 SYSTEM_PROMPT = """
 You are the AI clone of an extremely friendly and caring mother who owns "Tiệm trà bé lá" Milk Tea Shop. 
@@ -32,6 +32,11 @@ CRITICAL RULES:
 5. THOÁT KÝ TỰ (ESCAPE): Phải dùng `\\*` và `\\_` để thoát các ký tự này nếu không dùng để định dạng văn bản.
 6. TOPPING RULE: Topping không bán riêng. Thêm vào ly mới dùng `add_to_cart`. Thêm vào ly có sẵn dùng `add_topping_to_cart_item`.
 7. CART RULE: Luôn gọi `view_cart` khi khách hỏi về giỏ hàng. Không tự đoán.
+8. GIAO HÀNG (DELIVERY): 
+   - Tuân thủ SYSTEM CONTEXT chứa SĐT và Địa chỉ của khách.
+   - Nếu khách CHƯA CÓ SĐT hoặc địa chỉ, BẮT BUỘC hỏi xin rồi gọi tool `update_delivery_info` TRƯỚC KHI gọi `checkout`.
+   - Nếu ĐÃ CÓ, hãy xin xác nhận trước khi checkout (VD: Mẹ vẫn giao tới địa chỉ X, số Y như cũ nha con?).
+   - Nếu khách trả lời "Đã nhận được hàng" / "Nước tới rồi", BẮT BUỘC gọi tool `mark_order_done` để hoàn tất đơn hàng đang giao.
 """
 
 class AgentFactory:
@@ -54,7 +59,7 @@ class AgentFactory:
     @staticmethod
     def create_agent_executor():
         llm = AgentFactory.create_llm()
-        tools = [SearchMenuTool(), ViewCartTool(), AddToCartTool(), AddToppingToCartTool(), CheckoutTool()]
+        tools = [SearchMenuTool(), ViewCartTool(), AddToCartTool(), AddToppingToCartTool(), CheckoutTool(), UpdateDeliveryInfoTool(), MarkOrderDoneTool()]
         return create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
 
 # Global singleton executor for MVP
@@ -63,12 +68,33 @@ agent_executor = AgentFactory.create_agent_executor()
 async def process_user_message(platform: str, user_id: str, message: str, chat_history: list) -> tuple[str, list, list]:
     """Executes the agent logic for an incoming message, returning text, history, and buttons."""
     
+    from ..services.order_service import OrderService
+    from ..core.database import async_session_factory
+    from sqlalchemy import select
+    from ..models.order import Order, OrderStatus
+    
+    order_service = OrderService()
+    phone = "Chưa có"
+    address = "Chưa có"
+    shipping_order = False
+    
+    async with async_session_factory() as db:
+        user = await order_service.get_or_create_user(db, platform, user_id)
+        if user.phone: phone = user.phone
+        if user.address: address = user.address
+        
+        stmt = select(Order).where(Order.user_id == user.id, Order.status == OrderStatus.SHIPPING).limit(1)
+        res = await db.execute(stmt)
+        if res.scalar_one_or_none():
+            shipping_order = True
+
     # We silently inject the exact user parameters and tool constraints into the message 
     # so the AI knows exactly how to invoke the tools without hallucinating.
     enriched_message = (
         f"[SYSTEM CONTEXT: platform='{platform}', user_id='{user_id}'. "
-        f"CRITICAL: If the user is ordering drinks, you MUST call the `add_to_cart` tool for EACH drink! "
-        f"Do NOT just say 'I added it', actually call the tool. If you do not know the exact `item_id`, use `search_menu` first! "
+        f"User Data in DB -> Phone: {phone}, Address: {address}, Has Active Shipping Order: {shipping_order}\n"
+        f"CRITICAL: If the user is ordering drinks, you MUST call the `add_to_cart` tool for EACH DISTINCT drink! "
+        f"NEVER call `add_to_cart` more than ONCE for the same drink. If the user wants 2 of the same drink, set quantity=2 in ONE call. "
         f"Toppings (TOPxx) are NOT drinks. For NEW orders with toppings, pass topping_ids in `add_to_cart`. "
         f"To add a topping to a drink ALREADY IN CART, use `add_topping_to_cart_item` with the cart_index.]\n\n"
         f"Customer Message: {message}"

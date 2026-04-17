@@ -38,21 +38,95 @@ class CommandService:
                 return await handler(platform, user_id)
             return f"Lệnh {cmd_key} hiện chưa hỗ trợ con nha. Con thử gõ phím hỏi cô xem sao 😅", []
 
-        # 2. Check for Internal Owner Actions (Buttons from Owner notifications)
-        # SECURITY: Only the owner can trigger these administrative commands
+        # 2. Check for Internal Actions (Buttons from Owner or Customer)
         from ..config import settings
+        from ..core.database import async_session_factory
+        from ..models.order import Order, OrderStatus
+        from sqlalchemy import select
         
-        if raw_cmd.startswith("prepare_"):
-            if str(user_id) != str(settings.OWNER_CHAT_ID):
-                return "Xin lỗi con, chỉ Cô mới có quyền dùng chức năng này nha! 🙅‍♀️", []
-            order_id = raw_cmd.replace("prepare_", "")
-            return f"✅ Đã ghi nhận đơn hàng số {order_id} đang được chuẩn bị!", []
+        async def process_order_status(order_id_str: str, target_status: OrderStatus, allowed_user_id: str | None, success_owner_msg: str, success_user_msg: str, user_button: dict | None = None, owner_button: dict | None = None) -> Tuple[str, List[Dict[str, str]]]:
+            # Validation
+            if allowed_user_id and str(user_id) != allowed_user_id:
+                return "Xin lỗi, con không có quyền dùng chức năng này nha! 🙅‍♀️", []
             
+            try:
+                order_id = int(order_id_str)
+            except ValueError:
+                return "Mã đơn hàng không hợp lệ.", []
+
+            async with async_session_factory() as db:
+                stmt = select(Order).where(Order.id == order_id)
+                res = await db.execute(stmt)
+                order = res.scalar_one_or_none()
+                
+                if not order:
+                    return f"Không tìm thấy đơn hàng số {order_id}!", []
+                
+                # Check permission for user (if they are the customer marking DONE)
+                if target_status == OrderStatus.DONE and allowed_user_id is None:
+                    # Fetch user to ensure the one clicking is the owner of the order
+                    from ..services.order_service import OrderService
+                    order_service = OrderService()
+                    user = await order_service.get_or_create_user(db, platform, user_id)
+                    if order.user_id != user.id:
+                        return "Kia là đơn của người khác, con không được bấm đâu nha!", []
+                
+                order.status = target_status
+                await db.commit()
+                
+                # Notifications
+                from ..adapters.telegram import TelegramAdapter
+                tel = TelegramAdapter(settings.TELEGRAM_BOT_TOKEN)
+                
+                if target_status in [OrderStatus.PREPARING, OrderStatus.SHIPPING]:
+                    # Owner triggered, notify user
+                    from ..models.user import User
+                    user_stmt = select(User).where(User.id == order.user_id)
+                    user_res = await db.execute(user_stmt)
+                    cust = user_res.scalar_one_or_none()
+                    if cust:
+                        cust_msg = {"text": success_user_msg, "buttons": [user_button] if user_button else []}
+                        await tel.send_message(cust.platform_user_id, cust_msg)
+                
+                # If Target is DONE and user triggered it, notify owner
+                if target_status == OrderStatus.DONE and allowed_user_id is None:
+                    await tel.send_to_owner(success_owner_msg)
+                    return success_user_msg, []
+                
+                return success_owner_msg, [owner_button] if owner_button else []
+
+        if raw_cmd.startswith("prepare_"):
+            oid = raw_cmd.replace("prepare_", "")
+            return await process_order_status(
+                order_id_str=oid,
+                target_status=OrderStatus.PREPARING,
+                allowed_user_id=str(settings.OWNER_CHAT_ID),
+                success_owner_msg=f"✅ Đã chốt. Đang chuẩn bị đơn {oid}!",
+                success_user_msg=f"Mẹ đang đi pha nước cho con rồi nha! Đơn #{oid}",
+                owner_button={"text": "🚚 Bắt đầu giao (Shipping)", "callback_data": f"shipping_{oid}"}
+            )
+            
+        if raw_cmd.startswith("shipping_"):
+            oid = raw_cmd.replace("shipping_", "")
+            return await process_order_status(
+                order_id_str=oid,
+                target_status=OrderStatus.SHIPPING,
+                allowed_user_id=str(settings.OWNER_CHAT_ID),
+                success_owner_msg=f"✅ Đã đổi trạng thái đơn {oid} thành ĐANG GIAO!",
+                success_user_msg=f"Nước đang trên đường tới chỗ con nè (Đơn #{oid}). Khi nào nhận được nhớ bấm nút báo Mẹ nha!",
+                user_button={"text": "✅ Đã nhận được nước", "callback_data": f"done_{oid}"}
+            )
+
         if raw_cmd.startswith("done_"):
-            if str(user_id) != str(settings.OWNER_CHAT_ID):
-                return "Xin lỗi con, chỉ Cô mới có quyền dùng chức năng này nha! 🙅‍♀️", []
-            order_id = raw_cmd.replace("done_", "")
-            return f"✅ Chúc mừng! Đơn hàng số {order_id} đã hoàn tất và giao cho khách!", []
+            oid = raw_cmd.replace("done_", "")
+            # allowed_user_id=None means any user can click, but we check order ownership inside
+            return await process_order_status(
+                order_id_str=oid,
+                target_status=OrderStatus.DONE,
+                allowed_user_id=None,
+                success_owner_msg=f"✅ Đơn hàng số {oid} đã giao thành công và khách báo ĐÃ NHẬN HÀNG!",
+                success_user_msg=f"Cảm ơn con nhiều nghen, uống ngon mai mốt ủng hộ Mẹ tiếp nha! 😋 Đơn #{oid}"
+            )
 
         # 3. NOT A COMMAND -> Let the AI handle it
         return None

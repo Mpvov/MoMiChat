@@ -48,16 +48,39 @@ class CartService:
         unit_price: float,
         toppings: list[str] | None = None,
     ) -> list[dict]:
-        """Add an item to the user's cart. Returns the updated cart."""
+        """Add an item to the user's cart. Returns the updated cart.
+
+        Deduplication: if the same item_id + size + toppings combo already
+        exists, increment the quantity instead of creating a duplicate entry.
+        """
         cart = await self.get_cart(platform, user_id)
-        cart.append({
-            "item_id": item_id,
-            "item_name": item_name,
-            "size": size,
-            "quantity": quantity,
-            "unit_price": unit_price,
-            "toppings": toppings or [],
-        })
+        resolved_toppings = sorted(toppings or [])
+
+        # Check for existing identical entry
+        for entry in cart:
+            existing_toppings = sorted(entry.get("toppings", []))
+            if (
+                entry["item_id"] == item_id
+                and entry["size"] == size
+                and existing_toppings == resolved_toppings
+            ):
+                entry["quantity"] += quantity
+                logger.info(
+                    f"Cart dedup: merged {item_name} ({size}) for {platform}:{user_id}, "
+                    f"new qty={entry['quantity']}"
+                )
+                break
+        else:
+            # No match found — append new entry
+            cart.append({
+                "item_id": item_id,
+                "item_name": item_name,
+                "size": size,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "toppings": resolved_toppings,
+            })
+
         key = _cart_key(platform, user_id)
         await self.redis.set(key, json.dumps(cart, ensure_ascii=False), ex=CART_TTL)
         return cart
