@@ -37,5 +37,8 @@ jobs:
               cp .env.example .env
             fi
             
+            # Clean up disk space before pulling/building new images
+            docker system prune -af --volumes
+            
             # Pull new images if any and restart updated containers
             docker compose -f deploy/docker-compose.prod.yml up -d --build --remove-orphans

@@ -136,9 +136,12 @@ class CartService:
             
             topping_str = f" + {', '.join(item['toppings'])}" if item["toppings"] else ""
             
+            qty = item['quantity']
+            unit_price = item['unit_price']
+            price_detail = format_italic(f"{qty} x {unit_price:,.0f}đ = {subtotal:,.0f}đ")
             lines.append(
                 f"{i}. {format_bold(item['item_name'])} (Size {item['size']}){topping_str}\n"
-                f"   {format_italic(f'{item['quantity']} x {item['unit_price']:,.0f}đ = {subtotal:,.0f}đ')}"
+                f"   {price_detail}"
             )
         lines.append(f"\n💰 {format_bold(f'TỔNG CỘNG: {total:,.0f}đ')}")
         return "\n".join(lines)
