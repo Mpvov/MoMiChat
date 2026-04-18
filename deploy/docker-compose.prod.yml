@@ -1,0 +1,73 @@
+name: momichat-prod
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: momichat_api_prod
+    # Only map 8080 to localhost so it isn't exposed publicly over EC2 IP
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+      - chromadb
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: momichat_bot_prod
+    env_file:
+      - .env
+    environment:
+      # Use docker network hostname 'api' to communicate internally
+      - FASTAPI_INTERNAL_URL=http://api:8080/api/v1/webhooks/chat/process_message
+    depends_on:
+      - api
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  db:
+    image: postgres:15-alpine
+    container_name: momichat_db_prod
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-momichat}
+    # Do NOT export 5432 to the EC2 host for security
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: momichat_redis_prod
+    volumes:
+      - redis_data:/data
+    restart: always
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: momichat_chroma_prod
+    volumes:
+      - chroma_data:/chroma/chroma
+    restart: always
+
+volumes:
+  postgres_data:
+  redis_data:
+  chroma_data:
