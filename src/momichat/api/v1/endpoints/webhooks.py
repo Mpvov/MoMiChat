@@ -1,7 +1,7 @@
 import logging
 from string import Template
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -23,6 +23,14 @@ from ....services.payment_service import PaymentService
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
+async def verify_internal_token(
+    x_internal_secret: str = Header(..., alias="X-Internal-Secret"),
+) -> None:
+    """Dependency that gates internal-only endpoints behind a shared secret."""
+    if x_internal_secret != settings.SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Invalid internal token")
+
 # Instantiate Singletons
 telegram_adapter = TelegramAdapter()
 cart_service = CartService()
@@ -39,7 +47,7 @@ class IncomingChatMessage(BaseModel):
     username: str | None = None
     display_name: str | None = None
 
-@router.post("/chat/process_message")
+@router.post("/chat/process_message", dependencies=[Depends(verify_internal_token)])
 async def process_message_endpoint(
     payload: IncomingChatMessage,
     db: AsyncSession = Depends(get_db)

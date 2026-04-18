@@ -11,14 +11,23 @@ from .ai.knowledge import KnowledgeBase
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
+    openapi_url=f"{settings.API_V1_PREFIX}/openapi.json" if settings.DEBUG else None,
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
     description="MoMiChat Backend for AI Milk Tea Bot"
 )
 
+# Sanitize CORS: wildcard origin + credentials is invalid per spec
+_origins = settings.ALLOWED_ORIGINS
+_credentials = True
+if "*" in _origins:
+    _origins = ["*"]
+    _credentials = False  # Browsers reject wildcard + credentials anyway
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 # Config
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 FASTAPI_INTERNAL_URL = os.getenv("FASTAPI_INTERNAL_URL", "http://127.0.0.1:8080/api/v1/webhooks/chat/process_message")
+SECRET_KEY = os.getenv("SECRET_KEY", "")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN environment variable")
@@ -68,8 +69,9 @@ ERROR_MESSAGES = [
 
 async def _call_backend(payload: dict) -> dict:
     """Fire the HTTP request to the FastAPI backend and return the JSON response."""
+    headers = {"X-Internal-Secret": SECRET_KEY}
     async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(FASTAPI_INTERNAL_URL, json=payload)
+        response = await client.post(FASTAPI_INTERNAL_URL, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
 

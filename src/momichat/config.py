@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     PROJECT_NAME: str = "MoMiChat"
     VERSION: str = "0.1.0"
-    DEBUG: bool = True
+    DEBUG: bool = False
     
     API_V1_PREFIX: str = "/api/v1"
     ALLOWED_ORIGINS: List[str] = ["*"]
