@@ -3,7 +3,7 @@ name: momichat-prod
 services:
   api:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile.api
     container_name: momichat_api_prod
     # Only map 8080 to localhost so it isn't exposed publicly over EC2 IP
@@ -24,7 +24,7 @@ services:
 
   telegram-bot:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile.bot
     container_name: momichat_bot_prod
     env_file:
