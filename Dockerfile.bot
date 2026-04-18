@@ -1,0 +1,44 @@
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Set environment variables for isolated build
+ENV PIP_DEFAULT_TIMEOUT=100 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Copy only dependency definition first to maximize layer caching
+COPY pyproject.toml README.md ./
+
+# Install dependencies into a separate target directory
+RUN pip install --prefix=/install .
+
+# ==========================================
+# Runtime Stage
+# ==========================================
+FROM python:3.11-slim
+
+# Create a non-root user and group
+RUN groupadd -g 1001 appgroup && \
+    useradd -u 1001 -g appgroup -s /bin/bash -m appuser
+
+WORKDIR /app
+
+# Copy installed dependencies from the builder
+COPY --from=builder /install /usr/local
+
+# Copy application source code with correct ownership
+COPY --chown=appuser:appgroup . .
+
+# Environment setup
+ENV PYTHONPATH=/app/src \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Pre-compile python code to pyc for faster startup
+RUN python -m compileall -q /app/src /app/bots || true
+
+# Switch to non-root user for security
+USER 1001
+
+CMD ["python", "bots/telegram/app.py"]
