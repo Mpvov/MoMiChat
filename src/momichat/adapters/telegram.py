@@ -61,8 +61,8 @@ class TelegramAdapter(MessagingAdapter):
             if message.buttons:
                 payload["reply_markup"] = {
                     "inline_keyboard": [
-                        [{"text": b["text"], "callback_data": b.get("data", "")}]
-                        for b in message.buttons
+                    [{"text": b["text"], "callback_data": b.get("data") or b.get("callback_data", "")}]
+                    for b in message.buttons
                     ]
                 }
             await self.client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
@@ -77,7 +77,7 @@ class TelegramAdapter(MessagingAdapter):
         if buttons:
             payload["reply_markup"] = {
                 "inline_keyboard": [
-                    [{"text": b["text"], "callback_data": b.get("data", "")}]
+                    [{"text": b["text"], "callback_data": b.get("data") or b.get("callback_data", "")}]
                     for b in buttons
                 ]
             }

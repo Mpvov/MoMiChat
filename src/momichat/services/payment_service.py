@@ -1,9 +1,5 @@
-"""
-Payment service to integrate with payOS.
-Generates payment links and validates webhooks.
-"""
-
 import logging
+import time
 
 from payos import AsyncPayOS
 from payos.types import CreatePaymentLinkRequest
@@ -28,7 +24,6 @@ class PaymentService:
         """
         Calls payOS API to create a payment link.
         """
-        import time
         # Use Unix timestamp + order_id to guarantee absolute uniqueness 
         # and prevent random number collisions, perfectly fitting in the 53-bit integer limit.
         payos_order_code = int(f"{int(time.time())}{order_id}")

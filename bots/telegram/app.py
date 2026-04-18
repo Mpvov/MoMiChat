@@ -1,13 +1,24 @@
 import logging
 import os
+
+import httpx
 from dotenv import load_dotenv
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+    constants,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 # Load environment variables from .env file
 load_dotenv()
-
-import httpx
-from telegram import Update, constants, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
 # Set up logging
 logging.basicConfig(

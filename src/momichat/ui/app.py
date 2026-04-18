@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ if str(src_path) not in sys.path:
 from momichat.config import settings
 from momichat.core.database import async_session_factory
 from momichat.models import Order, OrderStatus, User
+from momichat.services.order_service import OrderService
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -23,6 +25,18 @@ except ImportError:
     st_autorefresh = None
 
 st.set_page_config(page_title="MoMiChat - Quản lý Cửa Hàng", layout="wide")
+
+def _format_item(item) -> str:
+    """Format an OrderItem including toppings for display."""
+    topping_str = ""
+    if item.toppings:
+        try:
+            topping_list = json.loads(item.toppings)
+            if topping_list:
+                topping_str = f" + {', '.join(topping_list)}"
+        except (ValueError, TypeError):
+            pass
+    return f"- {item.item_name} ({item.size}){topping_str} x{item.quantity}"
 
 
 async def fetch_orders(status: OrderStatus) -> list[Order]:
@@ -44,6 +58,15 @@ async def update_order_status(order_id: int, new_status: OrderStatus):
         order = result.scalar_one_or_none()
         if order:
             order.status = new_status
+            await session.commit()
+
+async def cancel_order_ui(order_id: int):
+    service = OrderService()
+    async with async_session_factory() as session:
+        success = await service.cancel_order(
+            session, order_id, reason="Chủ quán hủy đơn (từ Dashboard Web)", canceled_by_owner=True
+        )
+        if success:
             await session.commit()
 
 
@@ -70,8 +93,12 @@ def main():
             with st.container(border=True):
                 st.markdown(f"**Đơn #{o.id}** - {o.total_price:,.0f}đ")
                 st.caption(f"Khách: {o.user.display_name}")
+                if o.delivery_phone: st.caption(f"📞 {o.delivery_phone}")
+                if o.delivery_address: st.caption(f"📍 {o.delivery_address}")
+                for item in o.items:
+                    st.text(_format_item(item))
                 if st.button("Hủy đơn", key=f"cancel_{o.id}"):
-                    loop.run_until_complete(update_order_status(o.id, OrderStatus.CANCELED))
+                    loop.run_until_complete(cancel_order_ui(o.id))
                     st.rerun()
 
     with col2:
@@ -83,12 +110,9 @@ def main():
                 if o.delivery_phone: st.caption(f"📞 {o.delivery_phone}")
                 if o.delivery_address: st.caption(f"📍 {o.delivery_address}")
                 for item in o.items:
-                    st.text(f"- {item.item_name} ({item.size}) x{item.quantity}")
+                    st.text(_format_item(item))
                 if o.note:
                     st.info(f"Ghi chú: {o.note}")
-                if st.button("Bắt đầu làm", key=f"start_{o.id}", type="primary"):
-                    loop.run_until_complete(update_order_status(o.id, OrderStatus.PREPARING))
-                    st.rerun()
 
     with col3:
         st.subheader("Đang Làm (PREPARING)")
@@ -99,10 +123,7 @@ def main():
                 if o.delivery_phone: st.caption(f"📞 {o.delivery_phone}")
                 if o.delivery_address: st.caption(f"📍 {o.delivery_address}")
                 for item in o.items:
-                    st.text(f"- {item.item_name} ({item.size}) x{item.quantity}")
-                if st.button("Giao hàng (Shipping)", key=f"ship_{o.id}", type="primary"):
-                    loop.run_until_complete(update_order_status(o.id, OrderStatus.SHIPPING))
-                    st.rerun()
+                    st.text(_format_item(item))
 
     with col4:
         st.subheader("Đang Giao (SHIPPING)")
@@ -113,10 +134,7 @@ def main():
                 if o.delivery_phone: st.caption(f"📞 {o.delivery_phone}")
                 if o.delivery_address: st.caption(f"📍 {o.delivery_address}")
                 for item in o.items:
-                    st.text(f"- {item.item_name} ({item.size}) x{item.quantity}")
-                if st.button("Khách đã nhận (Done)", key=f"done_{o.id}", type="primary"):
-                    loop.run_until_complete(update_order_status(o.id, OrderStatus.DONE))
-                    st.rerun()
+                    st.text(_format_item(item))
 
     with col5:
         st.subheader("Đã Xong / Hủy")

@@ -3,13 +3,24 @@ LangChain tools for the Mom AI Agent.
 These functions map directly to our services (Menu Search, Cart, Checkout).
 """
 
+import logging
+import traceback
 from typing import Type
 
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
+from sqlalchemy import desc, select
+from sqlalchemy.orm import selectinload
 
-from .knowledge import MENU_DICT, KnowledgeBase
+from ..adapters.telegram import TelegramAdapter
+from ..config import settings
+from ..core.database import async_session_factory
+from ..models.order import Order, OrderStatus
+from ..services.cart_service import CartService
+from ..services.order_service import OrderService
+from ..services.payment_service import PaymentService
 from ..utils.formatting import escape_markdown
+from .knowledge import MENU_DICT, KnowledgeBase
 
 # Assume knowledge base is injected or initialized cleanly in a real app
 kb = KnowledgeBase()
@@ -69,8 +80,6 @@ class ViewCartTool(BaseTool):
         return "Not implemented synchronously."
 
     async def _arun(self, platform: str, user_id: str) -> str:
-        from ..services.cart_service import CartService
-
         cart_service = CartService()
         cart = await cart_service.get_cart(platform, user_id)
 
@@ -91,76 +100,115 @@ class ViewCartTool(BaseTool):
         return "\n".join(lines)
 
 
-class AddToCartInput(BaseModel):
+class ClearCartInput(BaseModel):
     platform: str = Field(description="Messaging platform")
     user_id: str = Field(description="Platform user ID")
-    item_id: str = Field(description="Exact DRINK ID from the menu (e.g., TS01). DO NOT GUESS. You MUST call search_menu first if you do not know the exact ID.")
+
+
+class ClearCartTool(BaseTool):
+    name: str = "clear_cart"
+    description: str = (
+        "Clear the user's entire shopping cart. Use this BEFORE adding new items "
+        "when the user wants to start a completely new order and their cart still "
+        "has items from a previous session. "
+        "Examples: 'cho con order lại', 'đặt đơn mới', 'order nước đi cô'."
+    )
+    args_schema: Type[BaseModel] = ClearCartInput
+
+    def _run(self, platform: str, user_id: str) -> str:
+        return "Not implemented synchronously."
+
+    async def _arun(self, platform: str, user_id: str) -> str:
+        cart_service = CartService()
+        cart = await cart_service.get_cart(platform, user_id)
+        if not cart:
+            return "Giỏ hàng đã trống sẵn, sẵn sàng nhận đơn mới."
+        await cart_service.clear_cart(platform, user_id)
+        return f"Đã xóa giỏ hàng cũ ({len(cart)} món). Sẵn sàng nhận đơn mới."
+
+
+class CartItemInput(BaseModel):
+    item_id: str = Field(description="Exact DRINK ID from the menu. DO NOT GUESS. You MUST call search_menu first.")
     size: str = Field(description="M or L")
     quantity: int = Field(description="Number of items")
     topping_ids: list[str] = Field(default=[], description="Optional list of topping IDs to attach (e.g., ['TOP01', 'TOP06']). Only use IDs starting with TOP.")
+
+class AddToCartInput(BaseModel):
+    platform: str = Field(description="Messaging platform")
+    user_id: str = Field(description="Platform user ID")
+    items: list[CartItemInput] = Field(description="List of drinks to add to the cart. You can add multiple drinks in one call.")
 
 
 class AddToCartTool(BaseTool):
     name: str = "add_to_cart"
     description: str = (
-        "Add a DRINK to the user's cart. Toppings are NOT separate items — "
-        "pass topping IDs in the `topping_ids` parameter to attach them to THIS drink. "
-        "NEVER call add_to_cart with a topping ID (TOPxx) as item_id. "
-        "CRITICAL: ALWAYS use `search_menu` first to find the correct `item_id`. NEVER GUESS THE ID!"
+        "Add one or more DRINKs to the user's cart in a SINGLE BATCH. "
+        "Toppings are NOT separate items — pass topping IDs in the `topping_ids` parameter "
+        "of each drink to attach them. NEVER call add_to_cart with a topping ID (TOPxx) as item_id. "
+        "CRITICAL: ALWAYS use `search_menu` first to find the correct `item_id`. NEVER GUESS THE ID! "
+        "CRITICAL: If the user orders multiple drinks, PUT ALL OF THEM in the `items` list in ONE CALL! "
+        "CRITICAL: If the drink name ALREADY CONTAINS the topping (e.g. 'Trà Sữa Trân Châu Đen'), DO NOT pass "
+        "its ID (e.g. TOP01) in `topping_ids` unless the user explicitly asks for EXTRA."
     )
     args_schema: Type[BaseModel] = AddToCartInput
 
-    def _run(self, platform: str, user_id: str, item_id: str, size: str, quantity: int, topping_ids: list[str] | None = None) -> str:
+    def _run(self, platform: str, user_id: str, items: list[dict]) -> str:
         return "Not implemented synchronously."
 
-    async def _arun(self, platform: str, user_id: str, item_id: str, size: str, quantity: int, topping_ids: list[str] | None = None) -> str:
-        import logging
+    async def _arun(self, platform: str, user_id: str, items: list[dict] | list[CartItemInput]) -> str:
         logger = logging.getLogger(__name__)
-        logger.info(f"[AddToCart] called: item_id={item_id}, size={size}, qty={quantity}, toppings={topping_ids}, user={platform}:{user_id}")
+        cart_service = CartService()
         
-        from ..services.cart_service import CartService
-        
-        item_id = item_id.upper()
-        if item_id not in MENU_DICT:
-            return f"Error: Item {item_id} not found."
-        
-        item = MENU_DICT[item_id]
-        
-        # Block toppings from being added as standalone items
-        if item.get("category", "").lower() == "topping":
-            return (
-                f"Error: {item['name']} ({item_id}) is a TOPPING, not a drink. "
-                f"Do NOT add toppings as separate items. Instead, pass topping IDs "
-                f"in the `topping_ids` parameter when adding the DRINK."
+        responses = []
+        for v in items:
+            # Handle if given as dict or pydantic model
+            item_id = v.item_id if hasattr(v, 'item_id') else v.get('item_id', '')
+            size = v.size if hasattr(v, 'size') else v.get('size', 'M')
+            qty = v.quantity if hasattr(v, 'quantity') else v.get('quantity', 1)
+            tops = v.topping_ids if hasattr(v, 'topping_ids') else v.get('topping_ids', [])
+            
+            item_id = item_id.upper()
+            if item_id not in MENU_DICT:
+                responses.append(f"Error: Item {item_id} not found.")
+                continue
+            
+            item = MENU_DICT[item_id]
+            
+            # Block toppings from being added as standalone items
+            if item.get("category", "").lower() == "topping":
+                responses.append(
+                    f"Error: {item['name']} ({item_id}) is a TOPPING. "
+                    f"Pass it in `topping_ids` of a DRINK instead."
+                )
+                continue
+                
+            unit_price = item["price_m"] if size.upper() == "M" else item["price_l"]
+            
+            topping_names = []
+            topping_total = 0.0
+            for tid in (tops or []):
+                tid = tid.upper()
+                if tid in MENU_DICT and MENU_DICT[tid].get("category", "").lower() == "topping":
+                    topping_names.append(MENU_DICT[tid]["name"])
+                    topping_total += MENU_DICT[tid]["price_m"] or 0
+            
+            final_price = unit_price + topping_total
+            
+            await cart_service.add_item(
+                 platform=platform,
+                 user_id=user_id,
+                 item_id=item_id,
+                 item_name=item["name"],
+                 size=size.upper(),
+                 quantity=qty,
+                 unit_price=final_price,
+                 toppings=topping_names
             )
             
-        cart_service = CartService()
-        unit_price = item["price_m"] if size.upper() == "M" else item["price_l"]
-        
-        # Resolve topping names and add their prices
-        topping_names = []
-        topping_total = 0.0
-        for tid in (topping_ids or []):
-            tid = tid.upper()
-            if tid in MENU_DICT and MENU_DICT[tid].get("category", "").lower() == "topping":
-                topping_names.append(MENU_DICT[tid]["name"])
-                topping_total += MENU_DICT[tid]["price_m"] or 0
-        
-        final_price = unit_price + topping_total
-        
-        await cart_service.add_item(
-             platform=platform,
-             user_id=user_id,
-             item_id=item_id,
-             item_name=item["name"],
-             size=size.upper(),
-             quantity=quantity,
-             unit_price=final_price,
-             toppings=topping_names
-        )
-        
-        topping_str = f" + {', '.join(topping_names)}" if topping_names else ""
-        return f"Added {quantity}x {item['name']} (Size {size.upper()}){topping_str} to cart. Unit price: {final_price:,.0f}đ"
+            topping_str = f" + {', '.join(topping_names)}" if topping_names else ""
+            responses.append(f"Added {qty}x {item['name']} (Size {size.upper()}){topping_str}. Unit: {final_price:,.0f}đ")
+            
+        return "\n".join(responses)
 
 
 class AddToppingToCartInput(BaseModel):
@@ -184,8 +232,6 @@ class AddToppingToCartTool(BaseTool):
         return "Not implemented synchronously."
 
     async def _arun(self, platform: str, user_id: str, cart_index: int, topping_id: str) -> str:
-        from ..services.cart_service import CartService
-
         topping_id = topping_id.upper()
         if topping_id not in MENU_DICT:
             return f"Error: Topping {topping_id} not found in menu."
@@ -215,6 +261,37 @@ class AddToppingToCartTool(BaseTool):
         )
 
 
+class RemoveFromCartInput(BaseModel):
+    platform: str = Field(description="Messaging platform")
+    user_id: str = Field(description="Platform user ID")
+    cart_index: int = Field(description="0-based index of the item in the cart to remove. Use 0 for the first item, 1 for the second, etc. YOU MUST CALL view_cart first to know the correct index.")
+
+class RemoveFromCartTool(BaseTool):
+    name: str = "remove_from_cart"
+    description: str = (
+        "Remove an item from the user's cart by its index. "
+        "Use this when the user says they don't want an item anymore, "
+        "or when you made a mistake adding an item and need to delete it. "
+        "Examples: 'bỏ ly trà sữa đi', 'xóa món số 2', 'không lấy kem tươi nữa (nếu kem tươi đi kèm món, phải xóa món đó rồi add lại)'"
+    )
+    args_schema: Type[BaseModel] = RemoveFromCartInput
+
+    def _run(self, platform: str, user_id: str, cart_index: int) -> str:
+        return "Not implemented synchronously."
+
+    async def _arun(self, platform: str, user_id: str, cart_index: int) -> str:
+        cart_service = CartService()
+        
+        cart = await cart_service.get_cart(platform, user_id)
+        if not (0 <= cart_index < len(cart)):
+            return f"Error: Cart index {cart_index} is invalid. The cart has {len(cart)} items."
+            
+        item_name = cart[cart_index]["item_name"]
+        await cart_service.remove_item(platform, user_id, cart_index)
+        
+        return f"Thành công! Đã xóa món '{item_name}' (số thứ tự {cart_index}) khỏi giỏ hàng."
+
+
 class CheckoutInput(BaseModel):
     platform: str = Field(description="Messaging platform")
     user_id: str = Field(description="Platform user ID")
@@ -229,11 +306,6 @@ class CheckoutTool(BaseTool):
         return "Not implemented synchronously."
 
     async def _arun(self, platform: str, user_id: str) -> str:
-        from ..services.cart_service import CartService
-        from ..services.order_service import OrderService
-        from ..services.payment_service import PaymentService
-        from ..core.database import async_session_factory
-        
         cart_service = CartService()
         order_service = OrderService()
         payment_service = PaymentService()
@@ -264,6 +336,19 @@ class CheckoutTool(BaseTool):
                 
                 order.payos_order_code = payment_link["orderCode"]
                 await db.commit()
+                
+                tel = TelegramAdapter()
+                
+                # Fetch order item details manually since we just added them in this session but didn't refresh relation
+                stmt_refresh = select(Order).where(Order.id == order.id).options(selectinload(Order.items), selectinload(Order.user))
+                res_refresh = await db.execute(stmt_refresh)
+                refreshed_order = res_refresh.scalar_one()
+
+                msg_text = order_service.format_order_details(refreshed_order, title="⚠️ CÓ ĐƠN MỚI CHỜ THANH TOÁN")
+                await tel.send_to_owner(
+                    text=msg_text,
+                    buttons=[{"text": "❌ Hủy đơn", "data": f"cancel_{order.id}"}]
+                )
                 
                 return f"Thành công! Hãy gửi cho user link thanh toán này: {payment_link['checkoutUrl']}"
             except Exception as e:
@@ -311,13 +396,6 @@ class MarkOrderDoneTool(BaseTool):
         return "Not implemented synchronously."
 
     async def _arun(self, platform: str, user_id: str) -> str:
-        from ..services.order_service import OrderService
-        from ..services.command_service import CommandService
-        from ..services.cart_service import CartService
-        from ..core.database import async_session_factory
-        from sqlalchemy import select, desc
-        from ..models.order import Order, OrderStatus
-
         async with async_session_factory() as db:
             order_service = OrderService()
             user = await order_service.get_or_create_user(db, platform, user_id)
@@ -330,19 +408,12 @@ class MarkOrderDoneTool(BaseTool):
             if not order:
                 return "Lỗi: Khách hàng không có đơn hàng nào đang trong trạng thái 'Đang giao' (SHIPPING) để hoàn tất."
             
-            # Mark as done using command service logic
-            # To avoid circular imports and keep logic DRY, we'll manually update here and trigger notification
-            from ..adapters.telegram import TelegramAdapter
-            from ..models.message import OutgoingMessage
-            from ..config import settings
-            import logging
-            
             order.status = OrderStatus.DONE
             await db.commit()
             
             # Notify Owner
-            tel = TelegramAdapter(settings.TELEGRAM_BOT_TOKEN)
-            await tel.send_to_owner(f"✅ Đơn hàng số {order.id} của khách {user.display_name} đã báo ĐÃ NHẬN HÀNG (qua chat)!")
+            tel = TelegramAdapter()
+            await tel.send_to_owner(f"\u2705 Đơn hàng số {order.id} của khách {user.display_name} đã báo ĐÃ NHẬN HÀNG (qua chat)!")
             
             return f"Thành công! Đã chuyển trạng thái đơn {order.id} sang HOÀN TẤT (DONE)."
 
@@ -366,16 +437,8 @@ class CancelOrderTool(BaseTool):
         return "Not implemented synchronously."
 
     async def _arun(self, platform: str, user_id: str, reason: str = "Khách hàng hủy đơn") -> str:
-        import logging
         logger = logging.getLogger(__name__)
         logger.info(f"[CancelOrder] called: user={platform}:{user_id}, reason={reason}")
-
-        from ..services.order_service import OrderService
-        from ..services.payment_service import PaymentService
-        from ..services.cart_service import CartService
-        from ..adapters.telegram import TelegramAdapter
-        from ..core.database import async_session_factory
-        from ..models.order import OrderStatus
 
         async with async_session_factory() as db:
             order_service = OrderService()
@@ -388,20 +451,15 @@ class CancelOrderTool(BaseTool):
             if not order:
                 return "Không có đơn hàng nào đang chờ thanh toán để hủy."
 
-            # 2. Cancel the PayOS payment link (if it exists)
-            if order.payos_order_code:
-                await payment_service.cancel_payment_request(
-                    order.payos_order_code, reason
-                )
+            # 2. Cancel order using unified flow
+            success = await order_service.cancel_order(db, order.id, reason, canceled_by_owner=False)
+            if not success:
+               return "Đơn hàng không thể hủy lúc này."
 
-            # 3. Update DB status
-            order.status = OrderStatus.CANCELED
-            await db.flush()
-
-            # 4. Clear user cart
+            # 3. Clear user cart
             await cart_service.clear_cart(platform, user_id)
 
-            # 5. Notify Owner
+            # 4. Notify Owner
             telegram = TelegramAdapter()
             await telegram.send_to_owner(
                 text=(

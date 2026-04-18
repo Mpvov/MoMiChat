@@ -13,11 +13,29 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     REDIS_URL: str
     
-    DEFAULT_LLM_PROVIDER: str = "openai"
+    DEFAULT_LLM_PROVIDER: str = "gemini"
+    GEMINI_API_KEYS: str = ""  # Comma separated list of keys for fallback
+    GEMINI_MODELS: str = "gemini-3.1-flash-lite-preview" # Comma separated models
     OPENAI_API_KEY: str = ""
-    GEMINI_API_KEY: str = ""
     HF_TOKEN: str = ""
     
+    OLLAMA_BASE_URL: str = ""
+    OLLAMA_MODEL: str = "llama3"
+    
+    @property
+    def gemini_keys_list(self) -> list[str]:
+        """Parsed list of Gemini keys from comma-separated string."""
+        if not self.GEMINI_API_KEYS:
+            return []
+        return [k.strip() for k in self.GEMINI_API_KEYS.split(",") if k.strip()]
+
+    @property
+    def gemini_models_list(self) -> list[str]:
+        """Parsed list of Gemini models from comma-separated string."""
+        if not self.GEMINI_MODELS:
+            return ["gemini-3.1-flash-lite-preview"]
+        return [m.strip() for m in self.GEMINI_MODELS.split(",") if m.strip()]
+
     PAYOS_CLIENT_ID: str = ""
     PAYOS_API_KEY: str = ""
     PAYOS_CHECKSUM_KEY: str = ""

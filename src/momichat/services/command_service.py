@@ -1,13 +1,22 @@
-"""
-Command Service
-Handles explicit slash commands (e.g. /start, /cart) using a scalable Dispatcher pattern.
-By intercepting commands, we save LLM processing costs and ensure deterministic responses.
-"""
+from typing import Dict, List, Tuple
 
-from typing import Tuple, List, Dict
 import logging
-from .cart_service import CartService
-from ..utils.formatting import format_bold, format_italic, escape_markdown
+from sqlalchemy import select
+
+from ..adapters.base import OutgoingMessage
+from ..adapters.telegram import TelegramAdapter
+from ..ai.knowledge import MENU_DICT
+from ..config import settings
+from ..core.database import async_session_factory
+from ..models.order import Order, OrderStatus
+from ..models.user import User
+from ..services.cart_service import CartService
+from ..services.order_service import OrderService
+from ..utils.formatting import (
+    escape_markdown,
+    format_bold,
+    format_italic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +48,6 @@ class CommandService:
             return f"Lệnh {cmd_key} hiện chưa hỗ trợ con nha. Con thử gõ phím hỏi cô xem sao 😅", []
 
         # 2. Check for Internal Actions (Buttons from Owner or Customer)
-        from ..config import settings
-        from ..core.database import async_session_factory
-        from ..models.order import Order, OrderStatus
-        from sqlalchemy import select
-        
         async def process_order_status(order_id_str: str, target_status: OrderStatus, allowed_user_id: str | None, success_owner_msg: str, success_user_msg: str, user_button: dict | None = None, owner_button: dict | None = None) -> Tuple[str, List[Dict[str, str]]]:
             # Validation
             if allowed_user_id and str(user_id) != allowed_user_id:
@@ -65,7 +69,6 @@ class CommandService:
                 # Check permission for user (if they are the customer marking DONE)
                 if target_status == OrderStatus.DONE and allowed_user_id is None:
                     # Fetch user to ensure the one clicking is the owner of the order
-                    from ..services.order_service import OrderService
                     order_service = OrderService()
                     user = await order_service.get_or_create_user(db, platform, user_id)
                     if order.user_id != user.id:
@@ -75,18 +78,21 @@ class CommandService:
                 await db.commit()
                 
                 # Notifications
-                from ..adapters.telegram import TelegramAdapter
-                tel = TelegramAdapter(settings.TELEGRAM_BOT_TOKEN)
+                tel = TelegramAdapter()
                 
                 if target_status in [OrderStatus.PREPARING, OrderStatus.SHIPPING]:
                     # Owner triggered, notify user
-                    from ..models.user import User
                     user_stmt = select(User).where(User.id == order.user_id)
                     user_res = await db.execute(user_stmt)
                     cust = user_res.scalar_one_or_none()
                     if cust:
-                        cust_msg = {"text": success_user_msg, "buttons": [user_button] if user_button else []}
-                        await tel.send_message(cust.platform_user_id, cust_msg)
+                        buttons_list = [user_button] if user_button else []
+                        cust_msg = OutgoingMessage(
+                            platform_user_id=cust.platform_user_id,
+                            text=success_user_msg,
+                            buttons=buttons_list if buttons_list else None,
+                        )
+                        await tel.send_message(cust_msg)
                 
                 # If Target is DONE and user triggered it, notify owner
                 if target_status == OrderStatus.DONE and allowed_user_id is None:
@@ -102,7 +108,7 @@ class CommandService:
                 target_status=OrderStatus.PREPARING,
                 allowed_user_id=str(settings.OWNER_CHAT_ID),
                 success_owner_msg=f"✅ Đã chốt. Đang chuẩn bị đơn {oid}!",
-                success_user_msg=f"Mẹ đang đi pha nước cho con rồi nha! Đơn #{oid}",
+                success_user_msg=f"Cô đang đi pha nước cho con rồi nha!",
                 owner_button={"text": "🚚 Bắt đầu giao (Shipping)", "callback_data": f"shipping_{oid}"}
             )
             
@@ -113,7 +119,7 @@ class CommandService:
                 target_status=OrderStatus.SHIPPING,
                 allowed_user_id=str(settings.OWNER_CHAT_ID),
                 success_owner_msg=f"✅ Đã đổi trạng thái đơn {oid} thành ĐANG GIAO!",
-                success_user_msg=f"Nước đang trên đường tới chỗ con nè (Đơn #{oid}). Khi nào nhận được nhớ bấm nút báo Mẹ nha!",
+                success_user_msg=f"Nước đang trên đường tới chỗ con nè (Đơn #{oid}). Khi nào nhận được nhớ bấm nút báo Cô nha!",
                 user_button={"text": "✅ Đã nhận được nước", "callback_data": f"done_{oid}"}
             )
 
@@ -125,8 +131,32 @@ class CommandService:
                 target_status=OrderStatus.DONE,
                 allowed_user_id=None,
                 success_owner_msg=f"✅ Đơn hàng số {oid} đã giao thành công và khách báo ĐÃ NHẬN HÀNG!",
-                success_user_msg=f"Cảm ơn con nhiều nghen, uống ngon mai mốt ủng hộ Mẹ tiếp nha! 😋 Đơn #{oid}"
+                success_user_msg=f"Cảm ơn con nhiều nghen, uống ngon mai mốt ủng hộ Cô tiếp nha! 😋 Đơn #{oid}"
             )
+
+        if raw_cmd.startswith("cancel_"):
+            oid = raw_cmd.replace("cancel_", "")
+            if str(user_id) != str(settings.OWNER_CHAT_ID):
+                return "Xin lỗi, con không có quyền dùng chức năng này nha! 🙅‍♀️", []
+                
+            try:
+                order_id = int(oid)
+            except ValueError:
+                return "Mã đơn hàng không hợp lệ.", []
+                
+            order_service = OrderService()
+            async with async_session_factory() as db:
+                success = await order_service.cancel_order(
+                    db=db, 
+                    order_id=order_id, 
+                    reason="Chủ quán từ chối nhận đơn", 
+                    canceled_by_owner=True
+                )
+                if success:
+                    await db.commit()
+                    return f"✅ Đã hủy đơn {order_id} thành công và báo cho khách!", []
+                else:
+                    return f"❌ Trạng thái đơn {order_id} hiện tại không cho phép hủy (Chỉ hủy được đơn đang chờ thanh toán).", []
 
         # 3. NOT A COMMAND -> Let the AI handle it
         return None
@@ -159,8 +189,6 @@ class CommandService:
         return f"Giỏ hàng của con nè:\n\n{summary}", buttons
 
     async def handle_menu(self, platform: str, user_id: str) -> Tuple[str, List[Dict[str, str]]]:
-        from ..ai.knowledge import MENU_DICT
-        
         if not MENU_DICT:
             return "Úi, Cô đang lấy menu trong bếp, con đợi xíu nha (Menu rỗng)!", []
             
@@ -192,5 +220,5 @@ class CommandService:
             menu_lines.append("") # Khoảng trắng giữa các mục
                 
         text = "\n".join(menu_lines)
-        text += f"👉 {format_bold('Con muốn món nào cứ nhắn tin tự nhiên nha')} (vd: {format_italic('cho con 1 ô long nhãn')})!"
+        text += f"👉 {format_bold('Con muốn món nào cứ nhắn tin tự nhiên nha')} (vd: {format_italic('cho con 1 trà sữa trân châu đen')})!"
         return text, []

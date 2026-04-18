@@ -79,7 +79,7 @@ class KnowledgeBase:
             )
             logger.info("Embedded menu items into ChromaDB.")
 
-    def search_menu(self, query: str, k: int = 3) -> list[dict]:
+    def search_menu(self, query: str, k: int = 10) -> list[dict]:
         """Semantically search the menu."""
         if not self.collection:
             return []
