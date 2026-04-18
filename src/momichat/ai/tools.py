@@ -94,7 +94,7 @@ class ViewCartTool(BaseTool):
 class AddToCartInput(BaseModel):
     platform: str = Field(description="Messaging platform")
     user_id: str = Field(description="Platform user ID")
-    item_id: str = Field(description="Exact DRINK ID from the menu (e.g., TS01). Must NOT be a topping ID (TOPxx).")
+    item_id: str = Field(description="Exact DRINK ID from the menu (e.g., TS01). DO NOT GUESS. You MUST call search_menu first if you do not know the exact ID.")
     size: str = Field(description="M or L")
     quantity: int = Field(description="Number of items")
     topping_ids: list[str] = Field(default=[], description="Optional list of topping IDs to attach (e.g., ['TOP01', 'TOP06']). Only use IDs starting with TOP.")
@@ -105,7 +105,8 @@ class AddToCartTool(BaseTool):
     description: str = (
         "Add a DRINK to the user's cart. Toppings are NOT separate items — "
         "pass topping IDs in the `topping_ids` parameter to attach them to THIS drink. "
-        "NEVER call add_to_cart with a topping ID (TOPxx) as item_id."
+        "NEVER call add_to_cart with a topping ID (TOPxx) as item_id. "
+        "CRITICAL: ALWAYS use `search_menu` first to find the correct `item_id`. NEVER GUESS THE ID!"
     )
     args_schema: Type[BaseModel] = AddToCartInput
 
@@ -344,3 +345,78 @@ class MarkOrderDoneTool(BaseTool):
             await tel.send_to_owner(f"✅ Đơn hàng số {order.id} của khách {user.display_name} đã báo ĐÃ NHẬN HÀNG (qua chat)!")
             
             return f"Thành công! Đã chuyển trạng thái đơn {order.id} sang HOÀN TẤT (DONE)."
+
+
+class CancelOrderInput(BaseModel):
+    platform: str = Field(description="Messaging platform")
+    user_id: str = Field(description="Platform user ID")
+    reason: str = Field(default="Khách hàng hủy đơn", description="Reason for cancellation (optional)")
+
+
+class CancelOrderTool(BaseTool):
+    name: str = "cancel_order"
+    description: str = (
+        "Cancel the user's most recent PENDING order. "
+        "This will invalidate the PayOS payment link and mark the order as CANCELED. "
+        "Use when the customer explicitly asks to cancel their order or checkout."
+    )
+    args_schema: Type[BaseModel] = CancelOrderInput
+
+    def _run(self, platform: str, user_id: str, reason: str = "Khách hàng hủy đơn") -> str:
+        return "Not implemented synchronously."
+
+    async def _arun(self, platform: str, user_id: str, reason: str = "Khách hàng hủy đơn") -> str:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[CancelOrder] called: user={platform}:{user_id}, reason={reason}")
+
+        from ..services.order_service import OrderService
+        from ..services.payment_service import PaymentService
+        from ..services.cart_service import CartService
+        from ..adapters.telegram import TelegramAdapter
+        from ..core.database import async_session_factory
+        from ..models.order import OrderStatus
+
+        async with async_session_factory() as db:
+            order_service = OrderService()
+            payment_service = PaymentService()
+            cart_service = CartService()
+
+            # 1. Find the latest PENDING order
+            order = await order_service.get_latest_pending_order(db, platform, user_id)
+
+            if not order:
+                return "Không có đơn hàng nào đang chờ thanh toán để hủy."
+
+            # 2. Cancel the PayOS payment link (if it exists)
+            if order.payos_order_code:
+                await payment_service.cancel_payment_request(
+                    order.payos_order_code, reason
+                )
+
+            # 3. Update DB status
+            order.status = OrderStatus.CANCELED
+            await db.flush()
+
+            # 4. Clear user cart
+            await cart_service.clear_cart(platform, user_id)
+
+            # 5. Notify Owner
+            telegram = TelegramAdapter()
+            await telegram.send_to_owner(
+                text=(
+                    f"❌ KHÁCH HỦY ĐƠN (Order #{order.id})\n"
+                    f"Khách: {order.user.display_name or 'N/A'}\n"
+                    f"Tổng: {order.total_price:,.0f}đ\n"
+                    f"Lý do: {reason}"
+                ),
+            )
+
+            await db.commit()
+
+            return (
+                f"Đã hủy đơn hàng #{order.id} thành công. "
+                f"Link thanh toán đã bị vô hiệu hóa và giỏ hàng đã được xóa. "
+                f"Hãy thông báo cho khách hàng rằng đơn đã được hủy."
+            )
+

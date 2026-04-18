@@ -2,6 +2,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from pydantic import BaseModel
 
@@ -125,3 +126,130 @@ async def payos_webhook(
             await db.commit()
 
     return {"status": "ok"}
+
+
+# ─── Pretty HTML page shown after user cancels on PayOS ─────────────────────
+CANCEL_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Đơn hàng đã hủy — Tiệm trà bé lá</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #fce4ec 0%, #fff3e0 100%);
+  }
+  .card {
+    background: #fff;
+    border-radius: 20px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.08);
+    max-width: 420px; width: 90%;
+    padding: 48px 32px; text-align: center;
+  }
+  .icon { font-size: 56px; margin-bottom: 16px; }
+  h1 { font-size: 22px; color: #d32f2f; margin-bottom: 8px; }
+  p  { color: #555; font-size: 15px; line-height: 1.6; margin-bottom: 24px; }
+  .order-code { font-family: monospace; font-weight: 700; color: #333; }
+  .btn {
+    display: inline-block; padding: 12px 28px;
+    background: linear-gradient(135deg, #81c784, #66bb6a);
+    color: #fff; text-decoration: none; border-radius: 12px;
+    font-weight: 600; font-size: 15px;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(102,187,106,.4); }
+  .footer { margin-top: 24px; font-size: 12px; color: #aaa; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">🍵</div>
+  <h1>Đơn hàng đã được hủy</h1>
+  <p>
+    Mã đơn: <span class="order-code">{order_code}</span><br>
+    Nếu con đổi ý, cứ quay lại nhắn tin cho Cô nhé!
+  </p>
+  <a class="btn" href="https://t.me/{bot_username}">💬 Quay lại Box Chat</a>
+  <div class="footer">Tiệm trà bé lá &copy; 2026</div>
+</div>
+</body>
+</html>"""
+
+
+@router.get("/payment/cancel")
+async def payment_cancel_redirect(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    PayOS redirects the user here when they click "Cancel" on the checkout page.
+    Updates DB, notifies Owner + User on Telegram, returns a styled HTML page.
+    """
+    from fastapi.responses import HTMLResponse
+    from sqlalchemy import select
+    from ....models.order import Order, OrderStatus
+    from ....config import settings
+
+    order_code_str = request.query_params.get("orderCode") or request.query_params.get("code")
+
+    if not order_code_str:
+        return HTMLResponse("<h2>Missing order code.</h2>", status_code=400)
+
+    try:
+        order_code = int(order_code_str)
+    except ValueError:
+        return HTMLResponse("<h2>Invalid order code.</h2>", status_code=400)
+
+    # 1. Find the order in DB
+    stmt = (
+        select(Order)
+        .where(Order.payos_order_code == order_code)
+        .options(selectinload(Order.user))
+    )
+    result = await db.execute(stmt)
+    order = result.scalar_one_or_none()
+
+    if not order:
+        return HTMLResponse("<h2>Order not found.</h2>", status_code=404)
+
+    # 2. Only cancel if still PENDING
+    if order.status == OrderStatus.PENDING:
+        order.status = OrderStatus.CANCELED
+        await db.flush()
+
+        # 3. Clear cart
+        if order.user:
+            await cart_service.clear_cart(order.user.platform.value, order.user.platform_user_id)
+
+        # 4. Notify Owner
+        background_tasks.add_task(
+            telegram_adapter.send_to_owner,
+            text=(
+                f"❌ KHÁCH HỦY ĐƠN (Order #{order.id})\\n"
+                f"Khách: {order.user.display_name or 'N/A'}\\n"
+                f"Tổng: {order.total_price:,.0f}đ\\n"
+                f"Lý do: Hủy từ trang thanh toán PayOS"
+            ),
+        )
+
+        # 5. Notify User
+        if order.user:
+            user_msg = OutgoingMessage(
+                platform_user_id=order.user.platform_user_id,
+                text="Cô thấy con vừa hủy thanh toán rồi nha. Nếu đổi ý thì cứ nhắn lại cho Cô, Cô tạo đơn mới cho con liền! 🍵",
+            )
+            background_tasks.add_task(telegram_adapter.send_message, user_msg)
+
+        await db.commit()
+    
+    # 6. Render pretty HTML
+    bot_username = settings.TELEGRAM_BOT_TOKEN.split(":")[0] if ":" in settings.TELEGRAM_BOT_TOKEN else ""
+    # Try to get proper bot username — fallback to empty
+    html = CANCEL_HTML_TEMPLATE.format(order_code=order_code, bot_username=bot_username)
+    return HTMLResponse(html)
+

@@ -9,7 +9,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from ..config import settings
-from .tools import AddToCartTool, AddToppingToCartTool, CheckoutTool, SearchMenuTool, ViewCartTool, UpdateDeliveryInfoTool, MarkOrderDoneTool
+from .tools import AddToCartTool, AddToppingToCartTool, CheckoutTool, SearchMenuTool, ViewCartTool, UpdateDeliveryInfoTool, MarkOrderDoneTool, CancelOrderTool
 
 SYSTEM_PROMPT = """
 You are the AI clone of an extremely friendly and caring mother who owns "Tiệm trà bé lá" Milk Tea Shop. 
@@ -19,7 +19,7 @@ If the requested item is strange or doesn't exist, politely suggest something el
 
 CRITICAL RULES:
 1. When asked for the menu, ALWAYS use the `search_menu` tool with query "all" to get the items, and directly WRITE OUT the actual drink names and prices in your chat message. Do not say "Here is the menu" without actually listing the items you received from the tool.
-2. Available tools: search_menu, add_to_cart, checkout. Use them appropriately.
+2. Available tools: search_menu, add_to_cart, checkout. Use them appropriately. BẮT BUỘC dùng tool `search_menu` để tra cứu chính xác `item_id` của món TUYỆT ĐỐI KHÔNG TỰ ĐOÁN `item_id`. Ví dụ, món A có thể mang ID TS02, trong khi bạn nhầm tưởng nó là món B. Nếu tự đoán ID, hệ thống sẽ thêm sai đồ uống vào giỏ của khách!
 3. HẠN CHẾ NÚT BẤM (BUTTONS): TUYỆT ĐỐI KHÔNG tự tạo nút cho các hành động chung (như "Xem menu", "Thanh toán"). Hãy để khách hàng nhắn tin tự nhiên. CHỈ dùng nút JSON cho các lựa chọn bắt buộc (VD: chọn Size M/L, Đá/Đường).
    Cấu trúc JSON chuẩn:
    ```json
@@ -37,6 +37,10 @@ CRITICAL RULES:
    - Nếu khách CHƯA CÓ SĐT hoặc địa chỉ, BẮT BUỘC hỏi xin rồi gọi tool `update_delivery_info` TRƯỚC KHI gọi `checkout`.
    - Nếu ĐÃ CÓ, hãy xin xác nhận trước khi checkout (VD: Mẹ vẫn giao tới địa chỉ X, số Y như cũ nha con?).
    - Nếu khách trả lời "Đã nhận được hàng" / "Nước tới rồi", BẮT BUỘC gọi tool `mark_order_done` để hoàn tất đơn hàng đang giao.
+9. HỦY ĐƠN (CANCEL):
+   - Nếu khách nói "hủy đơn", "không muốn mua nữa", "bỏ đơn", BẮT BUỘC gọi tool `cancel_order`.
+   - Tool sẽ tự hủy link thanh toán PayOS, xóa giỏ hàng, và báo cho chủ quán.
+   - Sau khi tool trả về thành công, hãy nhắn nhẹ nhàng: "Cô đã hủy đơn cho con rồi nha. Khi nào con muốn đặt lại thì cứ nhắn cho Cô!"
 """
 
 class AgentFactory:
@@ -59,7 +63,7 @@ class AgentFactory:
     @staticmethod
     def create_agent_executor():
         llm = AgentFactory.create_llm()
-        tools = [SearchMenuTool(), ViewCartTool(), AddToCartTool(), AddToppingToCartTool(), CheckoutTool(), UpdateDeliveryInfoTool(), MarkOrderDoneTool()]
+        tools = [SearchMenuTool(), ViewCartTool(), AddToCartTool(), AddToppingToCartTool(), CheckoutTool(), UpdateDeliveryInfoTool(), MarkOrderDoneTool(), CancelOrderTool()]
         return create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
 
 # Global singleton executor for MVP
@@ -117,15 +121,8 @@ async def process_user_message(platform: str, user_id: str, message: str, chat_h
     clean_text = str(content).strip()
     buttons = []
     
-    # Strip markdown code block wrapper if exists
-    if clean_text.startswith("```"):
-        lines = clean_text.split('\n')
-        if len(lines) >= 2:
-            clean_text = '\n'.join(lines[1:-1]).strip()
-
     def _repair_json_buttons(text: str) -> str:
         """Fixes common AI JSON errors, e.g., missing brackets around buttons."""
-        # Find "buttons": {obj1}, {obj2} and wrap in []
         pattern = r'("buttons"\s*:\s*)([^{]*{[^}]*}(?:\s*,\s*{[^}]*})*)'
         def wrap_in_brackets(match):
             prefix = match.group(1)
@@ -135,50 +132,68 @@ async def process_user_message(platform: str, user_id: str, message: str, chat_h
             return match.group(0)
         return re.sub(pattern, wrap_in_brackets, text)
 
-    # --- JSON extraction (handles both pure JSON and embedded JSON) ---
+    def _repair_json_string(j: str) -> str:
+        # Replace physical newlines with \n for JSON compliance (common LLM error)
+        res = []
+        in_string = False
+        i = 0
+        while i < len(j):
+            c = j[i]
+            if c == '"' and (i == 0 or j[i-1] != '\\'):
+                in_string = not in_string
+                res.append(c)
+            elif c == '\n' and in_string:
+                res.append('\\n')
+            else:
+                res.append(c)
+            i += 1
+        return "".join(res)
+
     def _try_parse_json_response(text: str) -> tuple[str, list] | None:
-        """Attempt to extract {"text": ..., "buttons": [...]} from the AI output."""
-        text = _repair_json_buttons(text)
+        """Attempt to robustly extract {"text": ..., "buttons": [...]} from the AI output."""
+        clean_text = str(text).strip()
         
-        # Strategy 1: The whole string is valid JSON
+        # 1. Regex find ```json ... ```
+        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
+        match = re.search(json_pattern, clean_text, re.DOTALL)
+        
+        json_str = ""
+        prefix = ""
+        suffix = ""
+        
+        if match:
+            json_str = match.group(1)
+            prefix = clean_text[:match.start()].strip()
+            suffix = clean_text[match.end():].strip()
+        else:
+            brace_start = clean_text.find('{')
+            brace_end = clean_text.rfind('}')
+            if brace_start != -1 and brace_end != -1 and brace_start < brace_end:
+                json_str = clean_text[brace_start:brace_end+1]
+                prefix = clean_text[:brace_start].strip()
+                suffix = clean_text[brace_end+1:].strip()
+            else:
+                return None
+                
+        # Fix common JSON syntax errors
+        json_str = _repair_json_string(json_str)
+        json_str = _repair_json_buttons(json_str)
+        
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(json_str)
             if isinstance(parsed, dict) and "text" in parsed:
                 btn = parsed.get("buttons", [])
-                if isinstance(btn, dict):
-                    btn = [btn]
-                return parsed["text"], btn
-        except (json.JSONDecodeError, ValueError):
+                if isinstance(btn, dict): btn = [btn]
+                
+                final_text_parts = []
+                if prefix: final_text_parts.append(prefix)
+                final_text_parts.append(parsed["text"])
+                if suffix: final_text_parts.append(suffix)
+                
+                return "\n\n".join(final_text_parts), btn
+        except Exception:
             pass
-
-        # Strategy 2: JSON is embedded within prose text — find the outermost {...}
-        # This handles cases where the AI writes text before/after the JSON block
-        brace_start = text.find('{')
-        if brace_start != -1:
-            # Find the matching closing brace
-            depth = 0
-            for i in range(brace_start, len(text)):
-                if text[i] == '{':
-                    depth += 1
-                elif text[i] == '}':
-                    depth -= 1
-                    if depth == 0:
-                        json_candidate = text[brace_start:i + 1]
-                        try:
-                            parsed = json.loads(json_candidate)
-                            if isinstance(parsed, dict) and "text" in parsed:
-                                btn = parsed.get("buttons", [])
-                                if isinstance(btn, dict):
-                                    btn = [btn]
-                                # Prepend any prose text before the JSON
-                                prefix = text[:brace_start].strip()
-                                final_text = parsed["text"]
-                                if prefix:
-                                    final_text = prefix + "\n\n" + final_text
-                                return final_text, btn
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                        break
+            
         return None
 
     result = _try_parse_json_response(clean_text)

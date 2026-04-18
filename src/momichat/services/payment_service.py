@@ -38,12 +38,15 @@ class PaymentService:
             raise ValueError("PayOS integration is not configured properly.")
 
         try:
+            cancel_url = f"{settings.APP_BASE_URL}/api/v1/webhooks/payment/cancel"
+            return_url = f"{settings.APP_BASE_URL}/api/v1/webhooks/payment/success"
+
             payment_request = CreatePaymentLinkRequest(
                 order_code=payos_order_code,
                 amount=int(amount),
                 description=description[:25],
-                cancel_url="https://buy.payos.vn",  # placeholder 
-                return_url="https://buy.payos.vn"   
+                cancel_url=cancel_url,
+                return_url=return_url,
             )
 
             payment_link = await self.payos.payment_requests.create(payment_request)
@@ -54,6 +57,24 @@ class PaymentService:
         except Exception as e:
             logger.error(f"PayOS API Error: {e}")
             raise RuntimeError(f"Failed to create payment link: {e}")
+
+    async def cancel_payment_request(
+        self, payos_order_code: int, reason: str | None = None
+    ) -> bool:
+        """Cancel a payment link on PayOS so it cannot be paid anymore."""
+        if not self.payos:
+            logger.error("PayOS keys are missing — cannot cancel.")
+            return False
+
+        try:
+            await self.payos.payment_requests.cancel(
+                payos_order_code, reason or "Khách hàng hủy đơn"
+            )
+            logger.info(f"PayOS link cancelled for order code {payos_order_code}")
+            return True
+        except Exception as e:
+            logger.warning(f"PayOS cancel failed (may already be cancelled): {e}")
+            return False
 
     def verify_webhook_signature(self, payload: dict) -> bool:
         """

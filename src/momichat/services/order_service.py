@@ -142,3 +142,22 @@ class OrderService:
         )
         result = await db.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_latest_pending_order(
+        self, db: AsyncSession, platform: str, platform_user_id: str
+    ) -> Order | None:
+        """Find the most recent PENDING order for a given user (for cancellation)."""
+        stmt = (
+            select(Order)
+            .join(User)
+            .where(
+                User.platform == Platform(platform),
+                User.platform_user_id == platform_user_id,
+                Order.status == OrderStatus.PENDING,
+            )
+            .options(selectinload(Order.user))
+            .order_by(Order.created_at.desc())
+            .limit(1)
+        )
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()

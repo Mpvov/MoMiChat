@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     OWNER_CHAT_ID: str = ""
     FASTAPI_INTERNAL_URL: str = ""
+    APP_BASE_URL: str = "http://localhost:8080"  # ngrok/domain URL for PayOS callbacks
     SECRET_KEY: str
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

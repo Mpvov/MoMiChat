@@ -138,12 +138,13 @@ class CommandService:
             "👉 VD: _'Cô ơi cho con 1 hồng trà sữa size M ít đá nha'_\n\n"
             "*Các lệnh tiện ích con có thể dùng báo Cô:*\n"
             "🛒 /cart - Hiện ra các món trong giỏ hàng với lần mua này\n"
-            "📖 /start - Gửi lại thông báo hướng dẫn này và xóa giỏ hàng\n\n"
+            "📖 /menu - Hiện ra menu\n"
+            "/start - Gửi lại thông báo hướng dẫn này và xóa giỏ hàng\n\n"
             "Cô cũng có thể làm nút ở dưới cho con bấm nhanh nữa đó!"
         )
         buttons = [
-            {"text": "📖 Xem Thực Đơn", "callback_data": "/menu"},
-            {"text": "🛒 Giỏ Hàng", "callback_data": "/cart"}
+            {"text": "Xem Menu", "callback_data": "/menu"},
+            {"text": "Giỏ Hàng", "callback_data": "/cart"}
         ]
         return text, buttons
 
