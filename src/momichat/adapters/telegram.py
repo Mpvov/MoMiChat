@@ -70,7 +70,7 @@ class TelegramAdapter(MessagingAdapter):
     async def send_to_owner(self, text: str, buttons: list[dict] | None = None) -> None:
         """Push a notification to the shop owner's Telegram chat."""
         payload: dict = {
-            "chat_id": settings.OWNER_CHAT_ID,
+            "chat_id": settings.owner_chat_id_clean,
             "text": text,
             "parse_mode": "Markdown",
         }
