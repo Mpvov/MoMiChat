@@ -50,13 +50,14 @@ class CartService:
     ) -> list[dict]:
         """Add an item to the user's cart. Returns the updated cart.
 
-        Deduplication: if the same item_id + size + toppings combo already
-        exists, increment the quantity instead of creating a duplicate entry.
+        Idempotency: if the same item_id + size + toppings combo already
+        exists, the call is a no-op (returns cart unchanged). To order
+        multiples of the same item, use quantity > 1 in a single call.
         """
         cart = await self.get_cart(platform, user_id)
         resolved_toppings = sorted(toppings or [])
 
-        # Check for existing identical entry
+        # Check for existing identical entry — IDEMPOTENCY GUARD
         for entry in cart:
             existing_toppings = sorted(entry.get("toppings", []))
             if (
@@ -64,12 +65,14 @@ class CartService:
                 and entry["size"] == size
                 and existing_toppings == resolved_toppings
             ):
-                entry["quantity"] += quantity
-                logger.info(
-                    f"Cart dedup: merged {item_name} ({size}) for {platform}:{user_id}, "
-                    f"new qty={entry['quantity']}"
+                # Skip duplicate: return cart as-is to prevent LLM retry
+                # bugs from inflating quantities (e.g. x1 → x3).
+                # Customers order multiples via quantity=N in a single call.
+                logger.warning(
+                    f"Cart idempotency: SKIPPED duplicate {item_name} ({size}) "
+                    f"for {platform}:{user_id}, existing qty={entry['quantity']}"
                 )
-                break
+                return cart
         else:
             # No match found — append new entry
             cart.append({

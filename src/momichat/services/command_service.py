@@ -29,7 +29,8 @@ class CommandService:
             "/start": self.handle_start,
             "/help": self.handle_start,
             "/cart": self.handle_cart,
-            "/menu": self.handle_menu
+            "/menu": self.handle_menu,
+            "/guide": self.handle_guide
         }
 
     async def execute(self, command: str, platform: str, user_id: str) -> Tuple[str, List[Dict[str, str]]] | None:
@@ -106,7 +107,7 @@ class CommandService:
             return await process_order_status(
                 order_id_str=oid,
                 target_status=OrderStatus.PREPARING,
-                allowed_user_id=str(settings.OWNER_CHAT_ID),
+                allowed_user_id=str(settings.owner_chat_id_clean),
                 success_owner_msg=f"✅ Đã chốt. Đang chuẩn bị đơn {oid}!",
                 success_user_msg=f"Cô đang đi pha nước cho con rồi nha!",
                 owner_button={"text": "🚚 Bắt đầu giao (Shipping)", "callback_data": f"shipping_{oid}"}
@@ -117,7 +118,7 @@ class CommandService:
             return await process_order_status(
                 order_id_str=oid,
                 target_status=OrderStatus.SHIPPING,
-                allowed_user_id=str(settings.OWNER_CHAT_ID),
+                allowed_user_id=str(settings.owner_chat_id_clean),
                 success_owner_msg=f"✅ Đã đổi trạng thái đơn {oid} thành ĐANG GIAO!",
                 success_user_msg=f"Nước đang trên đường tới chỗ con nè (Đơn #{oid}). Khi nào nhận được nhớ bấm nút báo Cô nha!",
                 user_button={"text": "✅ Đã nhận được nước", "callback_data": f"done_{oid}"}
@@ -136,7 +137,7 @@ class CommandService:
 
         if raw_cmd.startswith("cancel_"):
             oid = raw_cmd.replace("cancel_", "")
-            if str(user_id) != str(settings.OWNER_CHAT_ID):
+            if str(user_id) != str(settings.owner_chat_id_clean):
                 return "Xin lỗi, con không có quyền dùng chức năng này nha! 🙅‍♀️", []
                 
             try:
@@ -164,17 +165,43 @@ class CommandService:
     async def handle_start(self, platform: str, user_id: str) -> Tuple[str, List[Dict[str, str]]]:
         text = (
             "Chào con, Cô đây! Cảm ơn con đã ghé Tiệm trà bé lá nha 🥰\n\n"
-            "Để order, con cứ nhắn tin tự nhiên như nói chuyện bình thường với Cô:\n"
+            "Để order nhanh nhất, con cứ nhắn tin tự nhiên như nói chuyện bình thường với Cô:\n"
             "👉 VD: _'Cô ơi cho con 1 hồng trà sữa size M ít đá nha'_\n\n"
             "*Các lệnh tiện ích con có thể dùng báo Cô:*\n"
-            "🛒 /cart - Hiện ra các món trong giỏ hàng với lần mua này\n"
-            "📖 /menu - Hiện ra menu\n"
-            "/start - Gửi lại thông báo hướng dẫn này và xóa giỏ hàng\n\n"
-            "Cô cũng có thể làm nút ở dưới cho con bấm nhanh nữa đó!"
+            "📖 /guide - Xem hướng dẫn cách đặt nước chi tiết\n"
+            "🛒 /cart - Hiện ra các món trong giỏ hàng\n"
+            "✨ /menu - Xem Thực Đơn của Tiệm\n"
+            "/start - Gửi lại thông báo này và xóa giỏ hàng\n\n"
+            "Cô cũng có các nút ở dưới cho con bấm nhanh nữa đó!"
         )
         buttons = [
-            {"text": "Xem Menu", "callback_data": "/menu"},
-            {"text": "Giỏ Hàng", "callback_data": "/cart"}
+            {"text": "📖 Xem Hướng dẫn", "callback_data": "/guide"},
+            {"text": "✨ Xem Menu", "callback_data": "/menu"},
+            {"text": "🛒 Giỏ Hàng", "callback_data": "/cart"}
+        ]
+        return text, buttons
+
+    async def handle_guide(self, platform: str, user_id: str) -> Tuple[str, List[Dict[str, str]]]:
+        text = (
+            "📖 *HƯỚNG DẪN ĐẶT NƯỚC TẠI MOMICHAT*\n\n"
+            "*Bước 1: Chọn món con thích* 🥤\n"
+            "Con cứ nhắn tin tự nhiên với Cô như đang chat với người thân vậy đó!\n"
+            "👉 VD: _'Cô ơi cho con 1 Trà Đào Sả size L ít đường nha'_\n"
+            "Hoặc con bấm nút *Xem Menu* để chọn món nhanh nhé.\n\n"
+            "*Bước 2: Chốt đơn & Cung cấp thông tin* 📝\n"
+            "Sau khi chọn xong, con gõ \"Thanh toán\" hoặc bấm nút *Thanh Toán*.\n"
+            "Cô sẽ hỏi Số điện thoại và Địa chỉ để Shipper dễ tìm thấy con. Con nhớ nhắn cho Cô chính xác nha!\n\n"
+            "*Bước 3: Thanh toán an toàn* 💳\n"
+            "Cô sẽ gửi con một link thanh toán *PayOS* (ngân hàng chính thống).\n"
+            "Con bấm vào link, chuyển khoản xong là hệ thống sẽ tự báo cho Cô ngay, không cần gửi ảnh bill đâu nè!\n\n"
+            "*Bước 4: Theo dõi đơn hàng* 🚚\n"
+            "Sau khi thanh toán, Cô sẽ cập nhật trạng thái đơn:\n"
+            "1️⃣ *Đang pha chế* ☕️: Cô đang vào bếp làm nước cho con.\n"
+            "2️⃣ *Đang giao hàng* 🛵: Shipper đang trên đường tới.\n"
+            "3️⃣ *Hoàn thành* ✅: Khi nhận được nước, con bấm nút *\"Đã nhận được nước\"* để Cô yên tâm nhé! Hoặc nói Cô một tiếng nhé 🥰"
+        )
+        buttons = [
+            {"text": "✨ Xem Menu Ngay", "callback_data": "/menu"}
         ]
         return text, buttons
 

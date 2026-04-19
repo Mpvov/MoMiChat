@@ -194,7 +194,8 @@ class AddToCartTool(BaseTool):
             
             final_price = unit_price + topping_total
             
-            await cart_service.add_item(
+            cart_before = await cart_service.get_cart(platform, user_id)
+            cart_after = await cart_service.add_item(
                  platform=platform,
                  user_id=user_id,
                  item_id=item_id,
@@ -206,7 +207,11 @@ class AddToCartTool(BaseTool):
             )
             
             topping_str = f" + {', '.join(topping_names)}" if topping_names else ""
-            responses.append(f"Added {qty}x {item['name']} (Size {size.upper()}){topping_str}. Unit: {final_price:,.0f}đ")
+            if len(cart_after) == len(cart_before):
+                # Idempotency guard triggered — item was already in cart
+                responses.append(f"ALREADY IN CART: {item['name']} (Size {size.upper()}){topping_str}. Do NOT add again.")
+            else:
+                responses.append(f"Added {qty}x {item['name']} (Size {size.upper()}){topping_str}. Unit: {final_price:,.0f}đ")
             
         return "\n".join(responses)
 

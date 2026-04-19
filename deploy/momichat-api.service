@@ -1,0 +1,18 @@
+[Unit]
+Description=MoMiChat FastAPI Backend
+After=network.target docker.service
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/MoMiChat
+# Load environment variables from our .env file
+EnvironmentFile=/home/ubuntu/MoMiChat/.env
+LimitNOFILE=65536
+# Use full path to uv if it is in the user's local bin
+ExecStart=/home/ubuntu/.local/bin/uv run uvicorn src.momichat.main:app --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

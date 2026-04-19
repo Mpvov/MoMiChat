@@ -230,7 +230,7 @@ class OrderService:
         if canceled_by_owner and order.user:
             tel = TelegramAdapter()
             user_msg = (
-                f"Cô xin lỗi nha, đơn hàng #{order.id} của con vừa bị hủy mất rồi.\n"
+                f"Cô xin lỗi nha, đơn hàng  của con vừa bị hủy mất rồi.\n"
                 f"Lý do: {reason}\n"
                 f"Con có muốn đổi qua món khác không thì báo Cô nhen! 🥺"
             )

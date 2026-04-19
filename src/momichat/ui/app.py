@@ -64,7 +64,7 @@ async def cancel_order_ui(order_id: int):
     service = OrderService()
     async with async_session_factory() as session:
         success = await service.cancel_order(
-            session, order_id, reason="Chủ quán hủy đơn (từ Dashboard Web)", canceled_by_owner=True
+            session, order_id, reason="Chủ quán hủy đơn", canceled_by_owner=True
         )
         if success:
             await session.commit()

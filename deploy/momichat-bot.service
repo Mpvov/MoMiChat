@@ -1,0 +1,16 @@
+[Unit]
+Description=MoMiChat Telegram Bot
+After=network.target momichat-api.service
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/MoMiChat
+EnvironmentFile=/home/ubuntu/MoMiChat/.env
+LimitNOFILE=65536
+ExecStart=/home/ubuntu/.local/bin/uv run python bots/telegram/app.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
