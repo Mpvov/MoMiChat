@@ -43,4 +43,4 @@ See the detailed [Architecture Documentation](docs/architecture.md) for Mermaid 
 - `docs/`: Detailed technical documentation.
 
 ## 📜 License
-MIT License. See [LICENSE](LICENSE) for more details.
+MIT License. See [LICENSE](LICENSE.md) for more details.
